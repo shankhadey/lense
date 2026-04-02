@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title id="page-title">Lense — Record. Zoom. Share.</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════
+       LANDING
+  ═══════════════════════════════════════════════ -->
+  <div id="landing">
+    <nav class="nav">
+      <div class="logo">
+        <div class="logo-mark"></div>
+        <span class="brand-name"></span>
+      </div>
+      <div class="nav-links">
+        <a href="https://github.com" target="_blank" class="nav-link" id="nav-github">GitHub</a>
+        <button class="btn-primary" id="nav-start-btn">Start Recording</button>
+      </div>
+    </nav>
+
+    <section class="hero">
+      <div class="hero-badge">Free. Open Source. No signup.</div>
+      <h1 class="hero-headline">
+        Record your screen.<br/>
+        <span class="accent">Zoom into anything.</span>
+      </h1>
+      <p class="hero-sub">
+        Pick a window or tab, work naturally, and zoom into any part of the recording with a simple drag. Videos save locally — no uploads, no servers.
+      </p>
+      <div class="hero-ctas">
+        <button class="btn-hero" id="hero-start-btn">
+          <span class="btn-icon">⬤</span> Start Recording Free
+        </button>
+        <span class="hero-note">Works in Chrome, Edge, Firefox · No install needed</span>
+      </div>
+      <div class="feature-pills">
+        <div class="pill">🎥 Screen + Webcam</div>
+        <div class="pill">🔍 Drag-to-Zoom</div>
+        <div class="pill">💾 Saves Locally</div>
+        <div class="pill">🔒 100% Private</div>
+        <div class="pill">📦 No Server</div>
+      </div>
+    </section>
+
+    <section class="how-it-works">
+      <h2>How it works</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">01</div>
+          <div class="step-body">
+            <h3>Pick your target</h3>
+            <p>Choose a window or tab. Lense records it silently in the background while you work naturally.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">02</div>
+          <div class="step-body">
+            <h3>Switch back to zoom</h3>
+            <p>Come back to Lense any time. Hold Shift and drag on the preview to zoom into any region of your recording.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">03</div>
+          <div class="step-body">
+            <h3>Zoom out, keep going</h3>
+            <p>Press Esc or click Zoom Out. Switch back to your target and keep working — recording continues.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">04</div>
+          <div class="step-body">
+            <h3>Stop and save</h3>
+            <p>Click Stop. Your video downloads instantly, with webcam and all zooms baked in.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span class="brand-name"></span> is free forever. Built in public.
+      <a href="https://github.com" target="_blank" id="footer-github">Star it on GitHub ↗</a>
+    </footer>
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════
+       RECORDER UI
+  ═══════════════════════════════════════════════ -->
+  <div id="recorder" class="hidden">
+
+    <!-- Toolbar -->
+    <div class="rec-bar" id="rec-bar">
+      <div class="rec-bar-left">
+        <div class="logo-small">
+          <div class="logo-mark sm"></div>
+          <span class="brand-name"></span>
+        </div>
+      </div>
+
+      <div class="rec-bar-center">
+        <div class="rec-timer" id="rec-timer">00:00</div>
+        <div class="rec-dot hidden" id="rec-dot"></div>
+        <!-- Zoom active indicator -->
+        <div class="zoom-indicator hidden" id="zoom-indicator">🔍 Zoomed</div>
+      </div>
+
+      <div class="rec-bar-right">
+        <button class="ctrl-btn" id="btn-cam-toggle" title="Toggle webcam">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+        </button>
+        <button class="ctrl-btn" id="btn-cam-shape" title="Toggle cam shape">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>
+        </button>
+        <button class="ctrl-btn" id="btn-mic-toggle" title="Toggle mic">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+        <div class="ctrl-divider"></div>
+        <!-- Zoom out button — only visible when zoomed -->
+        <button class="btn-zoom-out hidden" id="btn-zoom-out">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+          Zoom Out
+        </button>
+        <div class="ctrl-divider"></div>
+        <button class="btn-stop" id="btn-stop">
+          <span class="stop-icon"></span> Stop & Save
+        </button>
+        <button class="ctrl-btn danger" id="btn-discard" title="Discard">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Main content area: preview + cam pip -->
+    <div class="rec-content">
+
+      <!-- Live thumbnail preview — small, for zoom selection only -->
+      <div class="thumb-wrap">
+        <div class="thumb-label">Preview — <strong>Hold Shift + drag</strong> to zoom into any region</div>
+        <div class="thumb-container">
+          <canvas id="thumb-canvas"></canvas>
+          <!-- Drag selection box (DOM overlay on thumbnail) -->
+          <div id="drag-box" class="hidden"></div>
+        </div>
+        <!-- Zoom hint -->
+        <div class="zoom-hint" id="zoom-hint">
+          <span id="zoom-hint-text">Hold <strong>Shift</strong> + drag on the preview to zoom into any region</span>
+        </div>
+      </div>
+
+      <!-- Recording status -->
+      <div class="rec-status">
+        <div class="rec-status-dot"></div>
+        <span>Recording in progress — <strong>switch to your target tab to work</strong></span>
+      </div>
+
+    </div>
+
+    <!-- Webcam pip — draggable, position maps to recording -->
+    <div id="cam-pip" class="cam-pip">
+      <video id="cam-video" autoplay muted playsinline></video>
+      <div class="cam-drag-handle">⠿</div>
+    </div>
+
+  </div><!-- /recorder -->
+
+
+
+  <!-- ═══════════════════════════════════════════════
+       REVIEW PANEL
+  ═══════════════════════════════════════════════ -->
+  <div id="review-panel" class="hidden">
+
+    <div class="rv-nav">
+      <div class="logo">
+        <div class="logo-mark sm"></div>
+        <span class="brand-name"></span>
+      </div>
+      <div class="rv-nav-right">
+        <button class="rv-btn-new" id="rv-btn-new">← New Recording</button>
+        <button class="btn-primary" id="rv-btn-download-webm">↓ Download Video</button>
+      </div>
+    </div>
+
+    <div class="rv-body">
+
+      <!-- Left: video + timeline -->
+      <div class="rv-left">
+        <div class="rv-video-wrap">
+          <video id="rv-video" controls playsinline></video>
+        </div>
+
+        <div class="rv-timeline-section">
+          <div class="rv-section-label">Timeline</div>
+          <div id="rv-timeline-wrap" class="rv-timeline-wrap">
+            <div class="rv-timeline-bg"></div>
+            <div id="rv-timeline-track" class="rv-timeline-track"></div>
+          </div>
+          <div class="rv-tl-legend">
+            <span class="rv-legend-item"><span class="rv-legend-dot zoom"></span>Zoom in/out</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: stats + heatmap + zoom list -->
+      <div class="rv-right">
+
+        <div class="rv-stats">
+          <div class="rv-stat-card">
+            <div class="rv-stat-val" id="rv-stat-duration">—</div>
+            <div class="rv-stat-label">Duration</div>
+          </div>
+          <div class="rv-stat-card accent">
+            <div class="rv-stat-val" id="rv-stat-zooms">—</div>
+            <div class="rv-stat-label">Zooms</div>
+          </div>
+        </div>
+
+        <div class="rv-section">
+          <div class="rv-section-label">Zoom Moments</div>
+          <div id="rv-zoom-list" class="rv-zoom-list"></div>
+        </div>
+
+      </div>
+    </div>
+  </div><!-- /review-panel -->
+
+  <!-- ═══════════════════════════════════════════════
+       START MODAL
+  ═══════════════════════════════════════════════ -->
+  <div id="start-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-logo">
+        <div class="logo-mark"></div>
+        <span class="brand-name"></span>
+      </div>
+      <h2>Ready to record?</h2>
+      <p>Grant cam &amp; mic permissions, then pick any screen, window, or tab to record.</p>
+
+      <div class="modal-toggles">
+        <div class="toggle-row">
+          <span>Webcam overlay</span>
+          <label class="toggle">
+            <input type="checkbox" id="toggle-webcam" checked />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span>Microphone</span>
+          <label class="toggle">
+            <input type="checkbox" id="toggle-mic" checked />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Zoom settings — inline in modal, collapsed by default -->
+      <div class="modal-settings">
+        <button class="modal-settings-toggle" id="btn-settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+          Zoom Settings
+          <span class="modal-settings-arrow" id="settings-arrow">▸</span>
+        </button>
+        <div id="settings-panel" class="settings-panel hidden">
+          <div class="sp-body">
+            <div class="sp-controls">
+              <div class="sp-row">
+                <label class="sp-label">Zoom Tightness <span class="sp-value" id="sp-factor-val"></span></label>
+                <div class="sp-slider-wrap">
+                  <span class="sp-hint-l">Wide</span>
+                  <input type="range" id="sp-factor" min="0.1" max="1.0" step="0.01" />
+                  <span class="sp-hint-r">Tight</span>
+                </div>
+              </div>
+              <div class="sp-row">
+                <label class="sp-label">Zoom Speed <span class="sp-value" id="sp-duration-val"></span></label>
+                <div class="sp-slider-wrap">
+                  <span class="sp-hint-l">Snappy</span>
+                  <input type="range" id="sp-duration" min="200" max="1000" step="50" />
+                  <span class="sp-hint-r">Slow</span>
+                </div>
+              </div>
+              <div class="sp-row">
+                <label class="sp-label">Easing</label>
+                <div class="sp-easing-btns">
+                  <button class="sp-ease-btn" data-ease="ease-in-out">Cinematic</button>
+                  <button class="sp-ease-btn" data-ease="ease-out">Punchy</button>
+                  <button class="sp-ease-btn" data-ease="ease-in">Build-up</button>
+                  <button class="sp-ease-btn" data-ease="linear">Linear</button>
+                </div>
+              </div>
+            </div>
+            <div class="sp-preview-wrap">
+              <div class="sp-preview-label">Live Preview</div>
+              <canvas id="sp-preview" class="sp-preview-canvas"></canvas>
+              <div class="sp-preview-hint">Updates as you adjust settings</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="modal-error" class="modal-error hidden"></div>
+
+      <button class="btn-hero full" id="btn-go">
+        <span class="btn-icon">⬤</span> Start Recording
+      </button>
+      <button class="btn-ghost" id="btn-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
