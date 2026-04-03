@@ -531,10 +531,22 @@ function renderFrame() {
 
   if (isZoomed && state.zoomCurrentDraw) {
     // Use the pre-computed, constraint-applied, lerped draw rect directly
-    const { sx, sy, sw, sh } = state.zoomCurrentDraw;
+    let { sx, sy, sw, sh } = state.zoomCurrentDraw;
+
+    // zoomCurrentDraw is in srcW/srcH coordinate space. When screenSrc is the
+    // working canvas (smaller resolution), re-map the crop rect to that canvas's
+    // coordinate space so zoom crops land on the correct region.
+    if (screenSrc === state._workingCanvas) {
+      const wScaleX = state._workingCanvas.width  / srcW;
+      const wScaleY = state._workingCanvas.height / srcH;
+      sx = sx * wScaleX;
+      sy = sy * wScaleY;
+      sw = sw * wScaleX;
+      sh = sh * wScaleY;
+    }
 
     // Only draw zoomed if meaningfully different from full-screen
-    if (sw < srcW * 0.99 || sh < srcH * 0.99) {
+    if (sw < (screenSrc.videoWidth || screenSrc.width) * 0.99 || sh < (screenSrc.videoHeight || screenSrc.height) * 0.99) {
       oc.drawImage(screenSrc, sx, sy, sw, sh, 0, 0, srcW, srcH);
 
       // Zoom badge — only when fully settled (not mid-animation)
