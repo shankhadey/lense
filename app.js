@@ -1472,3 +1472,564 @@ function stopPreviewLoop() {
 
 // Sync settings UI on page load (in case saved settings differ from config defaults)
 syncSettingsUI();
+
+// ─── Pro / License ────────────────────────────────────────────────────────────
+const LICENSE_KEY     = "lense_license_key";
+const LICENSE_PLAN    = "lense_license_plan";
+const LICENSE_TS      = "lense_license_ts";
+const LICENSE_TTL_MS  = 7 * 24 * 60 * 60 * 1000; // 7-day offline grace
+
+state.licenseKey = null;
+state.isPro      = false;
+
+(function loadLicense() {
+  const key  = localStorage.getItem(LICENSE_KEY);
+  const plan = localStorage.getItem(LICENSE_PLAN);
+  const ts   = parseInt(localStorage.getItem(LICENSE_TS) || "0");
+  if (key && plan && (Date.now() - ts) < LICENSE_TTL_MS) {
+    state.licenseKey = key;
+    state.isPro      = true;
+  }
+  updateProUI();
+})();
+
+function updateProUI() {
+  const btn = $("rv-btn-pro");
+  if (!btn) return;
+  if (state.isPro) {
+    btn.textContent  = "⚡ Pro";
+    btn.classList.add("active");
+  } else {
+    btn.textContent  = "⚡ Go Pro";
+    btn.classList.remove("active");
+  }
+  // Gate upload button
+  const uploadBtn = $("rv-btn-upload");
+  if (uploadBtn) {
+    uploadBtn.disabled = !state.isPro;
+    uploadBtn.title    = state.isPro ? "" : "Pro subscription required";
+  }
+  // Gate server AI button
+  const serverBtn = $("rv-ai-use-server");
+  if (serverBtn) serverBtn.classList.toggle("hidden", !state.isPro);
+}
+
+// License modal
+$("rv-btn-pro").addEventListener("click", () => {
+  $("license-modal").classList.remove("hidden");
+  $("license-status").classList.add("hidden");
+  const input = $("license-key-input");
+  input.value = state.licenseKey || "";
+  input.focus();
+});
+$("btn-license-cancel").addEventListener("click", () => {
+  $("license-modal").classList.add("hidden");
+});
+$("btn-activate").addEventListener("click", async () => {
+  const key = $("license-key-input").value.trim();
+  if (!key) return;
+  const btn    = $("btn-activate");
+  const status = $("license-status");
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  status.className = "license-status";
+  status.textContent = "";
+
+  try {
+    const resp = await fetch("/license/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    const data = await resp.json();
+    if (data.valid) {
+      state.licenseKey = key;
+      state.isPro      = true;
+      localStorage.setItem(LICENSE_KEY,  key);
+      localStorage.setItem(LICENSE_PLAN, data.plan);
+      localStorage.setItem(LICENSE_TS,   Date.now().toString());
+      status.className   = "license-status success";
+      status.textContent = `✓ Pro activated (${data.plan})`;
+      status.classList.remove("hidden");
+      updateProUI();
+      setTimeout(() => $("license-modal").classList.add("hidden"), 1500);
+    } else {
+      status.className   = "license-status error";
+      status.textContent = "Invalid license key. Check your purchase confirmation email.";
+      status.classList.remove("hidden");
+    }
+  } catch {
+    status.className   = "license-status error";
+    status.textContent = "Couldn't reach license server. Check your connection.";
+    status.classList.remove("hidden");
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = "Activate";
+  }
+});
+
+// ─── Sharing ──────────────────────────────────────────────────────────────────
+let _shareVideoUrl = null;
+let _shareMimeType = null;
+let _shareExt      = null;
+let _shareVideoBlob = null;
+
+// Patch showReviewPanel to capture the blob and init share UI
+const _origShowReviewPanel = showReviewPanel;
+function showReviewPanel(videoUrl, mimeType, ext) {
+  _shareVideoUrl  = videoUrl;
+  _shareMimeType  = mimeType;
+  _shareExt       = ext;
+  _origShowReviewPanel(videoUrl, mimeType, ext);
+
+  // Reset share UI
+  $("rv-share-body").classList.remove("hidden");
+  $("rv-share-uploading").classList.add("hidden");
+  $("rv-share-done").classList.add("hidden");
+  $("rv-share-error").classList.add("hidden");
+  updateProUI();
+
+  // Kick off AI pipeline
+  triggerAIPipeline();
+}
+
+$("rv-btn-upload").addEventListener("click", async () => {
+  if (!state.isPro) {
+    $("license-modal").classList.remove("hidden");
+    return;
+  }
+  await runShareUpload();
+});
+
+async function runShareUpload() {
+  $("rv-share-body").classList.add("hidden");
+  $("rv-share-uploading").classList.remove("hidden");
+  $("rv-share-error").classList.add("hidden");
+
+  try {
+    // Fetch blob from object URL
+    const blob = await fetch(_shareVideoUrl).then(r => r.blob());
+    const filename = `lense-${new Date().toISOString().slice(0,19).replace(/[:.]/g,"-")}.${_shareExt}`;
+
+    // Step 1: get signed URL
+    setUploadLabel("Preparing upload…");
+    const reqResp = await fetch("/upload/request", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-License-Key": state.licenseKey,
+      },
+      body: JSON.stringify({ filename, size_bytes: blob.size }),
+    });
+    if (!reqResp.ok) {
+      const msg = await reqResp.text();
+      throw new Error(msg.includes("2 GB") ? "Recording is too large to share (2 GB limit)." : "Couldn't start upload. Try again.");
+    }
+    const { upload_url, video_id, public_url } = await reqResp.json();
+
+    // Step 2: PUT directly to R2 with progress
+    setUploadLabel("Uploading…");
+    await uploadWithProgress(blob, upload_url, pct => {
+      $("rv-upload-bar").style.width = pct + "%";
+      setUploadLabel(`Uploading… ${pct}%`);
+    });
+
+    // Step 3: POST /share with metadata
+    setUploadLabel("Generating link…");
+    const shareResp = await fetch("/share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        video_id,
+        zoom_events: state.zoomEvents,
+        duration_ms: state.durationMs,
+        ai_results: state._aiResults || null,
+      }),
+    });
+    if (!shareResp.ok) throw new Error(`Couldn't generate share link. Contact support with ID: ${video_id}`);
+    const { share_url } = await shareResp.json();
+
+    const fullUrl = window.location.origin + share_url;
+    $("rv-share-link").value = fullUrl;
+    $("rv-share-uploading").classList.add("hidden");
+    $("rv-share-done").classList.remove("hidden");
+
+  } catch (err) {
+    $("rv-share-uploading").classList.add("hidden");
+    $("rv-share-body").classList.remove("hidden");
+    $("rv-share-error").textContent = err.message || "Upload failed. Try again.";
+    $("rv-share-error").classList.remove("hidden");
+  }
+}
+
+function setUploadLabel(text) {
+  const el = $("rv-upload-label");
+  if (el) el.textContent = text;
+}
+
+function uploadWithProgress(blob, url, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Content-Type", blob.type || "video/webm");
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100));
+    };
+    xhr.onload  = () => (xhr.status >= 200 && xhr.status < 300) ? resolve() : reject(new Error("Upload failed. Try again."));
+    xhr.onerror = () => reject(new Error("Network error during upload. Try again."));
+    xhr.send(blob);
+  });
+}
+
+$("rv-share-copy").addEventListener("click", () => {
+  const input = $("rv-share-link");
+  navigator.clipboard.writeText(input.value).then(() => {
+    const btn = $("rv-share-copy");
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+  });
+});
+
+// ─── AI Pipeline ──────────────────────────────────────────────────────────────
+state._aiResults = null;
+
+function setAIStatus(html) {
+  const el = $("rv-ai-status");
+  if (el) el.innerHTML = html;
+}
+
+function showAIResults(results, source) {
+  state._aiResults = results;
+
+  if (results.summary) {
+    const el = $("rv-ai-summary");
+    el.innerHTML = `<div class="rv-ai-label">Summary</div><div class="rv-ai-text">${escHtml(results.summary)}</div>`;
+    el.classList.remove("hidden");
+  }
+
+  if (results.chapters && results.chapters.length) {
+    const el = $("rv-ai-chapters");
+    const rv = $("rv-video");
+    el.innerHTML = `<div class="rv-ai-label">Chapters</div>`;
+    results.chapters.forEach(ch => {
+      const item = document.createElement("div");
+      item.className = "rv-ai-chapter";
+      item.innerHTML = `<span class="rv-ai-ch-time" data-t="${ch.start_ms/1000}">${formatTime(ch.start_ms)}</span><span class="rv-ai-ch-title">${escHtml(ch.title)}</span>`;
+      item.querySelector(".rv-ai-ch-time").addEventListener("click", e => {
+        rv.currentTime = parseFloat(e.target.dataset.t);
+        rv.play();
+      });
+      el.appendChild(item);
+    });
+    el.classList.remove("hidden");
+  }
+
+  if (results.action_items && results.action_items.length) {
+    const el = $("rv-ai-actions");
+    el.innerHTML = `<div class="rv-ai-label">Action Items</div>` +
+      results.action_items.map(a => `<div class="rv-ai-action">→ ${escHtml(a)}</div>`).join("");
+    el.classList.remove("hidden");
+  }
+
+  if (source === "local") {
+    $("rv-ai-privacy").classList.remove("hidden");
+    if (state.isPro) $("rv-ai-server-prompt").classList.remove("hidden");
+  }
+
+  setAIStatus("");
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+async function triggerAIPipeline() {
+  if (!_shareVideoUrl) return;
+  setAIStatus('<span class="rv-ai-spinner"></span> Transcribing…');
+  $("rv-ai-privacy").classList.add("hidden");
+  $("rv-ai-server-prompt").classList.add("hidden");
+  $("rv-ai-summary").classList.add("hidden");
+  $("rv-ai-chapters").classList.add("hidden");
+  $("rv-ai-actions").classList.add("hidden");
+  state._aiResults = null;
+
+  let transcript = null;
+  try {
+    transcript = await runTranscription(_shareVideoUrl);
+  } catch {
+    setAIStatus('<span class="rv-ai-note">Couldn\'t load transcription model. <button class="rv-ai-retry" onclick="triggerAIPipeline()">Retry</button></span>');
+    return;
+  }
+
+  if (!transcript || !transcript.text || transcript.text.trim().length < 10) {
+    setAIStatus('<span class="rv-ai-note">No speech detected.</span>');
+    return;
+  }
+
+  setAIStatus('<span class="rv-ai-spinner"></span> Analyzing…');
+  try {
+    const results = await runAnalysis(transcript.text, state.zoomEvents, state.durationMs);
+    showAIResults(results, "local");
+  } catch (err) {
+    if (err.message === "server-needed") {
+      // Already prompted via showServerAIPrompt — do nothing more here
+    } else {
+      setAIStatus('<span class="rv-ai-note">Analysis failed. <button class="rv-ai-retry" onclick="triggerAIPipeline()">Retry</button></span>');
+    }
+  }
+}
+
+// ── Transcription (Whisper WASM via Transformers.js) ─────────────────────────
+async function runTranscription(videoUrl) {
+  // Lazy-load Transformers.js
+  if (!window._transformers) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.type = "module";
+      s.textContent = `
+        import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js';
+        window._transformersPipeline = pipeline;
+        window._transformers = true;
+        window.dispatchEvent(new Event('transformers-ready'));
+      `;
+      document.head.appendChild(s);
+      const onReady = () => { window.removeEventListener("transformers-ready", onReady); resolve(); };
+      window.addEventListener("transformers-ready", onReady);
+      s.onerror = reject;
+      setTimeout(() => reject(new Error("Transformers.js load timeout")), 30000);
+    });
+  }
+
+  // Extract audio from video blob via AudioContext
+  const blob    = await fetch(videoUrl).then(r => r.blob());
+  const arrBuf  = await blob.arrayBuffer();
+  const ctx     = new AudioContext({ sampleRate: 16000 });
+  let decoded;
+  try {
+    decoded = await ctx.decodeAudioData(arrBuf);
+  } catch {
+    await ctx.close();
+    throw new Error("audio-decode-failed");
+  }
+  await ctx.close();
+
+  // Get mono float32 at 16kHz (Whisper requirement)
+  const channelData = decoded.getChannelData(0);
+
+  // Load Whisper pipeline (cached after first load)
+  if (!window._whisperPipe) {
+    window._whisperPipe = await window._transformersPipeline(
+      "automatic-speech-recognition",
+      "Xenova/whisper-tiny.en",
+      { quantized: true }
+    );
+  }
+
+  const result = await window._whisperPipe(channelData, {
+    chunk_length_s: 30,
+    stride_length_s: 5,
+    return_timestamps: false,
+  });
+
+  return { text: result.text || "" };
+}
+
+// ── Analysis ──────────────────────────────────────────────────────────────────
+function estimateTokens(text) {
+  return Math.ceil(text.split(/\s+/).length * 1.3);
+}
+
+const MAX_ACCEPTABLE_SECONDS = 45;
+
+async function runAnalysis(transcript, zoomEvents, durationMs) {
+  const transcriptTokens = estimateTokens(transcript);
+  const OUTPUT_BUDGET    = Math.min(600, Math.ceil(transcriptTokens * 0.4));
+
+  // Try Chrome Gemini Nano first
+  if (window.ai?.summarizer || window.ai?.languageModel) {
+    try {
+      return await analyzeWithNano(transcript, zoomEvents, durationMs);
+    } catch { /* fall through */ }
+  }
+
+  // WebGPU fallback
+  if (navigator.gpu) {
+    return await analyzeWithWebGPU(transcript, zoomEvents, durationMs, {
+      outputBudget: OUTPUT_BUDGET,
+      onSpeedSample: (tps, tokensRemaining) => {
+        const projected = tokensRemaining / tps;
+        if (projected > MAX_ACCEPTABLE_SECONDS) {
+          showServerAIPrompt();
+        }
+      },
+    });
+  }
+
+  // No local AI available
+  showServerAIPrompt();
+  throw new Error("server-needed");
+}
+
+// ── Chrome Gemini Nano ────────────────────────────────────────────────────────
+async function analyzeWithNano(transcript, zoomEvents, durationMs) {
+  const zoomCtx = zoomEvents.length
+    ? zoomEvents.filter(e => e.type === "in").map(e => `zoom at ${formatTime(e.t)}`).join(", ")
+    : "none";
+
+  const prompt = `Analyze this screen recording transcript and return JSON only.
+Zoom moments: ${zoomCtx}
+Duration: ${formatTime(durationMs)}
+Transcript: ${transcript.slice(0, 8000)}
+
+Return this JSON shape only, no markdown:
+{"summary":"...","chapters":[{"title":"...","start_ms":0,"end_ms":0}],"action_items":["..."]}`;
+
+  let raw;
+  if (window.ai?.languageModel) {
+    const session = await window.ai.languageModel.create();
+    raw = await session.prompt(prompt);
+    session.destroy();
+  } else if (window.ai?.summarizer) {
+    const summarizer = await window.ai.summarizer.create({ type: "key-points" });
+    const summary    = await summarizer.summarize(transcript);
+    raw = JSON.stringify({ summary, chapters: [], action_items: [] });
+    summarizer.destroy();
+  } else {
+    throw new Error("nano-unavailable");
+  }
+
+  // Strip markdown fences if present
+  if (raw.includes("```")) { raw = raw.split("```")[1]; if (raw.startsWith("json")) raw = raw.slice(4); }
+  return JSON.parse(raw.trim());
+}
+
+// ── WebLLM (WebGPU) ───────────────────────────────────────────────────────────
+async function analyzeWithWebGPU(transcript, zoomEvents, durationMs, { outputBudget, onSpeedSample }) {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) { showServerAIPrompt(); throw new Error("server-needed"); }
+
+  if (!window._webllm) {
+    // Show download progress banner the first time
+    const isFirstTime = !localStorage.getItem("lense_webllm_cached");
+    if (isFirstTime) {
+      setAIStatus('<span class="rv-ai-spinner"></span> Downloading AI model (1.1 GB) — cached after first use <span id="rv-webllm-pct"></span>');
+    }
+    await new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.73/lib/index.js";
+      s.onload  = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+      setTimeout(() => reject(new Error("WebLLM load timeout")), 30000);
+    });
+    window._webllm = window.webllm;
+  }
+
+  if (!window._webllmEngine) {
+    window._webllmEngine = await window._webllm.CreateMLCEngine(
+      "Qwen2.5-1.5B-Instruct-q4f32_1-MLC",
+      {
+        initProgressCallback: (p) => {
+          const pctEl = $("rv-webllm-pct");
+          if (pctEl) pctEl.textContent = Math.round(p.progress * 100) + "%";
+          if (p.progress >= 1) localStorage.setItem("lense_webllm_cached", "1");
+        },
+      }
+    );
+    setAIStatus('<span class="rv-ai-spinner"></span> Analyzing…');
+  }
+
+  const zoomCtx = zoomEvents.filter(e => e.type === "in")
+    .map(e => `zoom at ${formatTime(e.t)}`).join(", ") || "none";
+
+  const prompt = `Analyze this screen recording transcript. Return JSON only, no markdown.
+Zoom moments: ${zoomCtx}
+Duration: ${formatTime(durationMs)}
+Transcript: ${transcript.slice(0, 6000)}
+
+JSON shape: {"summary":"...","chapters":[{"title":"...","start_ms":0,"end_ms":0}],"action_items":["..."]}`;
+
+  let raw = "";
+  let tokenCount = 0;
+  let startTime  = null;
+
+  const chunks = await window._webllmEngine.chat.completions.create({
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: outputBudget,
+    stream: true,
+    stream_options: { include_usage: false },
+  });
+
+  for await (const chunk of chunks) {
+    const delta = chunk.choices[0]?.delta?.content || "";
+    raw += delta;
+    tokenCount++;
+    if (tokenCount === 15 && onSpeedSample) {
+      startTime = startTime || performance.now();
+      const elapsed = (performance.now() - (startTime || performance.now())) / 1000 || 0.1;
+      const tps = 15 / Math.max(elapsed, 0.1);
+      onSpeedSample(tps, outputBudget - 15);
+    }
+    if (tokenCount === 1) startTime = performance.now();
+  }
+
+  if (raw.includes("```")) { raw = raw.split("```")[1]; if (raw.startsWith("json")) raw = raw.slice(4); }
+  return JSON.parse(raw.trim());
+}
+
+// ── Server AI prompt ──────────────────────────────────────────────────────────
+function showServerAIPrompt() {
+  if (!state.isPro) return;
+  $("rv-ai-server-prompt").classList.remove("hidden");
+}
+
+$("rv-ai-use-server").addEventListener("click", async () => {
+  if (!state.isPro) { $("license-modal").classList.remove("hidden"); return; }
+  $("rv-ai-server-prompt").classList.add("hidden");
+  $("rv-ai-privacy").classList.add("hidden");
+  setAIStatus('<span class="rv-ai-spinner"></span> Sending transcript to server…');
+
+  const transcriptText = window._lastTranscript || "";
+  if (!transcriptText) {
+    setAIStatus('<span class="rv-ai-note">No transcript available for server analysis.</span>');
+    return;
+  }
+
+  try {
+    const resp = await fetch("/ai/analyze", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-License-Key": state.licenseKey,
+      },
+      body: JSON.stringify({
+        transcript:  transcriptText,
+        duration_ms: state.durationMs,
+        zoom_events: state.zoomEvents,
+      }),
+    });
+    if (!resp.ok) throw new Error("Server unavailable");
+    const results = await resp.json();
+
+    // Clear previous local results
+    $("rv-ai-summary").classList.add("hidden");
+    $("rv-ai-chapters").classList.add("hidden");
+    $("rv-ai-actions").classList.add("hidden");
+
+    showAIResults(results, "server");
+    const notice = document.createElement("div");
+    notice.className = "rv-ai-note";
+    notice.textContent = "Transcript sent to Lense servers for analysis. Video remains on your device.";
+    $("rv-ai-status").appendChild(notice);
+  } catch {
+    setAIStatus('<span class="rv-ai-note">Server unavailable. <button class="rv-ai-retry" onclick="$(`rv-ai-use-server`).click()">Retry</button></span>');
+  }
+});
+
+// Store transcript for server opt-in (set during transcription)
+const _origRunTranscription = runTranscription;
+async function runTranscription(videoUrl) {
+  const result = await _origRunTranscription(videoUrl);
+  if (result) window._lastTranscript = result.text;
+  return result;
+}

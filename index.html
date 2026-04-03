@@ -181,6 +181,7 @@
         <span class="brand-name"></span>
       </div>
       <div class="rv-nav-right">
+        <button class="rv-btn-pro" id="rv-btn-pro">⚡ Pro</button>
         <button class="rv-btn-new" id="rv-btn-new">← New Recording</button>
         <button class="btn-primary" id="rv-btn-download-webm">↓ Download Video</button>
       </div>
@@ -225,9 +226,64 @@
           <div id="rv-zoom-list" class="rv-zoom-list"></div>
         </div>
 
+        <!-- AI Analysis section -->
+        <div class="rv-section" id="rv-ai-section">
+          <div class="rv-section-label">AI Analysis</div>
+          <div id="rv-ai-status" class="rv-ai-status"></div>
+          <div id="rv-ai-summary" class="rv-ai-block hidden"></div>
+          <div id="rv-ai-chapters" class="rv-ai-block hidden"></div>
+          <div id="rv-ai-actions" class="rv-ai-block hidden"></div>
+          <div id="rv-ai-privacy" class="rv-ai-privacy hidden">🔒 Processed on your device — recording never left your browser</div>
+          <div id="rv-ai-server-prompt" class="rv-ai-server-prompt hidden">
+            Results generated on your device.
+            <button id="rv-ai-use-server" class="rv-ai-server-btn">Use server for better quality →</button>
+          </div>
+        </div>
+
+        <!-- Share section -->
+        <div class="rv-section" id="rv-share-section">
+          <div class="rv-section-label">Share Recording</div>
+          <div id="rv-share-body">
+            <button class="rv-btn-upload" id="rv-btn-upload">↑ Upload &amp; Get Link</button>
+            <div class="rv-share-note">Your video will be uploaded to Lense servers</div>
+          </div>
+          <div id="rv-share-uploading" class="hidden">
+            <div class="rv-upload-progress">
+              <div class="rv-upload-bar" id="rv-upload-bar"></div>
+            </div>
+            <div class="rv-upload-label" id="rv-upload-label">Uploading…</div>
+          </div>
+          <div id="rv-share-done" class="hidden">
+            <div class="rv-share-link-row">
+              <input type="text" id="rv-share-link" class="rv-share-link-input" readonly />
+              <button class="rv-share-copy" id="rv-share-copy">Copy</button>
+            </div>
+          </div>
+          <div id="rv-share-error" class="rv-share-error hidden"></div>
+        </div>
+
       </div>
     </div>
   </div><!-- /review-panel -->
+
+  <!-- ═══════════════════════════════════════════════
+       LICENSE MODAL
+  ═══════════════════════════════════════════════ -->
+  <div id="license-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-logo">
+        <div class="logo-mark"></div>
+        <span class="brand-name"></span>
+        <span class="pro-badge">PRO</span>
+      </div>
+      <h2>Activate Pro</h2>
+      <p>Enter your license key to unlock sharing and server AI features.</p>
+      <div id="license-status" class="license-status hidden"></div>
+      <input type="text" id="license-key-input" class="license-input" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" />
+      <button class="btn-hero full" id="btn-activate">Activate</button>
+      <button class="btn-ghost" id="btn-license-cancel">Cancel</button>
+    </div>
+  </div>
 
   <!-- ═══════════════════════════════════════════════
        START MODAL
