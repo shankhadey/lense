@@ -76,7 +76,7 @@ button { cursor: pointer; border: none; background: none; font-family: inherit; 
 
 /* ── MODAL ── */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
-.modal { background: var(--bg2); border: 1px solid var(--border2); border-radius: 20px; padding: 36px; width: 100%; max-width: 440px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 20px; }
+.modal { background: var(--bg2); border: 1px solid var(--border2); border-radius: 20px; padding: 36px; width: 100%; max-width: 580px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 20px; }
 .modal-logo { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; }
 .modal h2 { font-family: var(--font-head); font-size: 26px; font-weight: 400; letter-spacing: -0.02em; }
 .modal p { font-size: 14px; color: var(--text2); margin-top: -8px; }
@@ -303,7 +303,6 @@ button { cursor: pointer; border: none; background: none; font-family: inherit; 
   width: 100%;
   background: var(--bg3);
   border-radius: var(--radius-sm);
-  overflow: hidden;
   animation: sp-slide-in 0.15s ease-out;
 }
 @keyframes sp-slide-in {
@@ -314,6 +313,7 @@ button { cursor: pointer; border: none; background: none; font-family: inherit; 
 
 .sp-body {
   display: flex; gap: 0; padding: 14px 16px;
+  min-width: 0;
 }
 
 /* Controls column */
@@ -364,7 +364,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* Preview column */
 .sp-preview-wrap {
-  flex-shrink: 0; width: 220px; padding-left: 18px;
+  flex-shrink: 0; width: 200px; min-width: 200px; padding-left: 18px;
   display: flex; flex-direction: column; gap: 8px;
 }
 .sp-preview-label { font-size: 11px; color: var(--text3); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
@@ -383,7 +383,6 @@ input[type="range"]::-webkit-slider-thumb {
   gap: 0;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  overflow: hidden;
 }
 .modal-settings-toggle {
   display: flex;
