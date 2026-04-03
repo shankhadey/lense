@@ -523,13 +523,19 @@ function renderFrame() {
   // ── Draw frame ────────────────────────────────────────────────────────────
   const isZoomed = state.zoomActive || state.zoomAnimating;
 
+  // For full-screen: when user is on Lense tab, sv shows Lense UI — use frozen
+  // working canvas instead so recording only contains working screen content
+  const screenSrc = (state.isFullScreen && state._workingCanvas && !document.hidden)
+    ? state._workingCanvas
+    : sv;
+
   if (isZoomed && state.zoomCurrentDraw) {
     // Use the pre-computed, constraint-applied, lerped draw rect directly
     const { sx, sy, sw, sh } = state.zoomCurrentDraw;
 
     // Only draw zoomed if meaningfully different from full-screen
     if (sw < srcW * 0.99 || sh < srcH * 0.99) {
-      oc.drawImage(sv, sx, sy, sw, sh, 0, 0, srcW, srcH);
+      oc.drawImage(screenSrc, sx, sy, sw, sh, 0, 0, srcW, srcH);
 
       // Zoom badge — only when fully settled (not mid-animation)
       if (state.zoomActive && !state.zoomAnimating) {
@@ -544,11 +550,11 @@ function renderFrame() {
         oc.restore();
       }
     } else {
-      oc.drawImage(sv, 0, 0, srcW, srcH);
+      oc.drawImage(screenSrc, 0, 0, srcW, srcH);
     }
   } else {
     // Normal full-screen draw
-    oc.drawImage(sv, 0, 0, srcW, srcH);
+    oc.drawImage(screenSrc, 0, 0, srcW, srcH);
   }
 
   // Webcam always drawn regardless of active tab
@@ -577,33 +583,6 @@ function renderFrame() {
   } else {
     // Window/tab mode: sv always shows the target content — draw directly
     thumbCtx.drawImage(sv, 0, 0, thumbCanvas.width, thumbCanvas.height);
-  }
-
-  // Draw webcam pip on thumbnail too so user sees the full composition
-  if (state.useCam && state.camStream && camVideo.readyState >= 2) {
-    const pipSize = Math.round(thumbCanvas.width * 0.14);
-    const margin  = Math.round(thumbCanvas.width * 0.02);
-    const pipW = state.camShape === "circle" ? pipSize : Math.round(pipSize * 1.4);
-    const pipH = pipSize;
-    const px   = state.camX !== null
-      ? state.camX * (thumbCanvas.width  / srcW)
-      : thumbCanvas.width  - pipW - margin;
-    const py   = state.camY !== null
-      ? state.camY * (thumbCanvas.height / srcH)
-      : thumbCanvas.height - pipH - margin;
-
-    thumbCtx.save();
-    if (state.camShape === "circle") {
-      thumbCtx.beginPath();
-      thumbCtx.arc(px + pipSize/2, py + pipSize/2, pipSize/2, 0, Math.PI * 2);
-      thumbCtx.clip();
-    } else {
-      thumbCtx.beginPath();
-      thumbCtx.roundRect(px, py, pipW, pipH, 6);
-      thumbCtx.clip();
-    }
-    thumbCtx.drawImage(camVideo, px, py, pipW, pipH);
-    thumbCtx.restore();
   }
 
   // Draw active zoom rect outline on thumbnail so user sees current zoom region
