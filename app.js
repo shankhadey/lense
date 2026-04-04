@@ -93,8 +93,9 @@ const state = {
   // causing recursion. This canvas freezes the last frame of the working screen
   // the instant you arrive at the Lense tab — no race condition.
   // For window/tab recordings: not used (sv always shows the correct content).
-  _workingCanvas: null,
-  _workingCtx:    null,
+  _workingCanvas:      null,
+  _workingCtx:         null,
+  _workingCanvasReady: false,  // true after first frame captured; guards against black frames at recording start
 
   // Legacy snapshot (kept for fallback)
   _thumbSnapshot: null,
@@ -252,8 +253,9 @@ async function startRecording() {
   state.zoomRect    = null;
   state.camX = state.camY = null;
   state.zoomEvents     = [];
-  state.durationMs     = 0;
-  state._thumbSnapshot = null;
+  state.durationMs          = 0;
+  state._thumbSnapshot      = null;
+  state._workingCanvasReady = false;
   updateZoomUI();
 
   // ── STEP 7: Switch to recorder view ──────────────────────────────────────
@@ -529,7 +531,7 @@ function renderFrame() {
   // false (Lense is still the active Chrome tab) but sv correctly shows the
   // native app. document.hasFocus() is false in that case, so we use sv.
   const lenseTabInForeground = !document.hidden && document.hasFocus();
-  const screenSrc = (state.isFullScreen && state._workingCanvas && lenseTabInForeground)
+  const screenSrc = (state.isFullScreen && state._workingCanvas && state._workingCanvasReady && lenseTabInForeground)
     ? state._workingCanvas
     : sv;
 
@@ -586,6 +588,7 @@ function renderFrame() {
     state._workingCtx.drawImage(sv,
       0, 0, state._workingCanvas.width, state._workingCanvas.height
     );
+    state._workingCanvasReady = true;
   }
 
   // ── Update thumbnail (visible in Lense tab for zoom selection) ────────────
