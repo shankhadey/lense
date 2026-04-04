@@ -365,6 +365,13 @@ function getSupportedMimeType() {
   return types.find(t => MediaRecorder.isTypeSupported(t)) || "";
 }
 
+// Tracks the last time the Chrome window had OS focus.
+// Used to add a 200ms grace period so that brief focus losses (e.g. user
+// clicking the browser address bar) are not misidentified as a native-app
+// switch — which would incorrectly expose sv (showing Lense UI) as screenSrc.
+let _lastChromeFocusTime = 0;
+window.addEventListener("focus", () => { _lastChromeFocusTime = Date.now(); });
+
 // ─── Web Worker render driver ─────────────────────────────────────────────────
 // Chrome throttles timers in background tabs. Web Workers are exempt.
 // The worker sends a "tick" message at 30fps; the main thread renders on each tick.
@@ -509,7 +516,14 @@ function renderFrame() {
   // user alt-tabs to VS Code / Figma / any native app, document.hidden stays
   // false (Lense is still the active Chrome tab) but sv correctly shows the
   // native app. document.hasFocus() is false in that case, so we use sv.
-  const lenseTabInForeground = !document.hidden && document.hasFocus();
+  //
+  // Grace period: if hasFocus() just became false (< 200ms ago), treat the tab
+  // as still in the foreground. Prevents transient focus losses (clicking the
+  // browser address bar, tab strip) from briefly exposing sv — which still
+  // shows the Lense UI in that state — as the recording source or corrupting
+  // _workingCanvas with Lense-UI frames.
+  const focusLostRecently = !document.hasFocus() && (Date.now() - _lastChromeFocusTime < 200);
+  const lenseTabInForeground = !document.hidden && (document.hasFocus() || focusLostRecently);
 
   // When in full-screen mode and the Lense tab is in the foreground but we
   // don't yet have a frozen work-screen frame captured, skip drawing this frame
