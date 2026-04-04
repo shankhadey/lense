@@ -501,17 +501,25 @@ function renderFrame() {
   // Guard: video must be ready
   if (sv.readyState < 2) return;
 
-  // Seed _workingCanvas from the very first valid sv frame.
-  // Ensures it's never empty — prevents both black frames AND infinite recursion
-  // (a static seeded frame shown while on the Lense tab is safe; a live sv feed
-  // would cause the screen capture to record itself recursively).
-  if (state.isFullScreen && state._workingCanvas && !state._workingCanvasReady) {
-    state._workingCtx.drawImage(sv, 0, 0, state._workingCanvas.width, state._workingCanvas.height);
-    state._workingCanvasReady = true;
-  }
-
   // ── Draw to offscreen canvas (the recording) ──────────────────────────────
   oc.clearRect(0, 0, srcW, srcH);
+
+  // For full-screen: sv shows Lense UI only when Chrome is the foreground app
+  // AND the Lense tab is active. document.hidden alone isn't enough — when the
+  // user alt-tabs to VS Code / Figma / any native app, document.hidden stays
+  // false (Lense is still the active Chrome tab) but sv correctly shows the
+  // native app. document.hasFocus() is false in that case, so we use sv.
+  const lenseTabInForeground = !document.hidden && document.hasFocus();
+
+  // When in full-screen mode and the Lense tab is in the foreground but we
+  // don't yet have a frozen work-screen frame captured, skip drawing this frame
+  // entirely. oc.clearRect already ran above so the offscreen canvas is black.
+  // We must NOT fall back to sv here: sv shows the Lense UI right now, which
+  // would capture the Lense tab into the recording or cause screen-capture
+  // recursion. A few silent black frames at the very start of a recording is
+  // far better than capturing the Lense UI. _workingCanvas will be populated
+  // the moment the user switches to their work app (_workingCanvasReady = true).
+  if (state.isFullScreen && lenseTabInForeground && !state._workingCanvasReady) return;
 
   // ── Advance zoom animation in DRAW SPACE ────────────────────────────────
   // We lerp between pre-computed draw rects {sx,sy,sw,sh}, not selection rects.
@@ -534,12 +542,6 @@ function renderFrame() {
   // ── Draw frame ────────────────────────────────────────────────────────────
   const isZoomed = state.zoomActive || state.zoomAnimating;
 
-  // For full-screen: sv shows Lense UI only when Chrome is the foreground app
-  // AND the Lense tab is active. document.hidden alone isn't enough — when the
-  // user alt-tabs to VS Code / Figma / any native app, document.hidden stays
-  // false (Lense is still the active Chrome tab) but sv correctly shows the
-  // native app. document.hasFocus() is false in that case, so we use sv.
-  const lenseTabInForeground = !document.hidden && document.hasFocus();
   const screenSrc = (state.isFullScreen && state._workingCanvas && state._workingCanvasReady && lenseTabInForeground)
     ? state._workingCanvas
     : sv;
