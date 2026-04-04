@@ -365,12 +365,12 @@ function getSupportedMimeType() {
   return types.find(t => MediaRecorder.isTypeSupported(t)) || "";
 }
 
-// Tracks the last time the Chrome window had OS focus.
+// Tracks the last time the Chrome window lost OS focus.
 // Used to add a 200ms grace period so that brief focus losses (e.g. user
 // clicking the browser address bar) are not misidentified as a native-app
 // switch — which would incorrectly expose sv (showing Lense UI) as screenSrc.
-let _lastChromeFocusTime = 0;
-window.addEventListener("focus", () => { _lastChromeFocusTime = Date.now(); });
+let _lastChromeBlurTime = -Infinity;
+window.addEventListener("blur", () => { _lastChromeBlurTime = Date.now(); });
 
 // ─── Web Worker render driver ─────────────────────────────────────────────────
 // Chrome throttles timers in background tabs. Web Workers are exempt.
@@ -522,7 +522,7 @@ function renderFrame() {
   // browser address bar, tab strip) from briefly exposing sv — which still
   // shows the Lense UI in that state — as the recording source or corrupting
   // _workingCanvas with Lense-UI frames.
-  const focusLostRecently = !document.hasFocus() && (Date.now() - _lastChromeFocusTime < 200);
+  const focusLostRecently = !document.hasFocus() && (Date.now() - _lastChromeBlurTime < 200);
   const lenseTabInForeground = !document.hidden && (document.hasFocus() || focusLostRecently);
 
   // When in full-screen mode and the Lense tab is in the foreground but we
