@@ -365,12 +365,13 @@ function getSupportedMimeType() {
   return types.find(t => MediaRecorder.isTypeSupported(t)) || "";
 }
 
-// Tracks the last time the Chrome window lost OS focus.
-// Used to add a 200ms grace period so that brief focus losses (e.g. user
-// clicking the browser address bar) are not misidentified as a native-app
-// switch — which would incorrectly expose sv (showing Lense UI) as screenSrc.
-let _lastChromeBlurTime = -Infinity;
-window.addEventListener("blur", () => { _lastChromeBlurTime = Date.now(); });
+// Tracks whether the Chrome window currently has OS focus.
+// Event-driven so it's reliable across all frames without calling hasFocus() per tick.
+// Used to detect when the Lense tab is visible on screen (and sv therefore shows
+// Lense UI rather than the user's work app).
+let _chromeFocused = document.hasFocus();
+window.addEventListener("focus", () => { _chromeFocused = true; });
+window.addEventListener("blur",  () => { _chromeFocused = false; });
 
 // ─── Web Worker render driver ─────────────────────────────────────────────────
 // Chrome throttles timers in background tabs. Web Workers are exempt.
@@ -508,37 +509,7 @@ function renderFrame() {
   // Guard: video must be ready
   if (sv.readyState < 2) return;
 
-  // ── Draw to offscreen canvas (the recording) ──────────────────────────────
-  oc.clearRect(0, 0, srcW, srcH);
-
-  // For full-screen: sv shows Lense UI only when Chrome is the foreground app
-  // AND the Lense tab is active. document.hidden alone isn't enough — when the
-  // user alt-tabs to VS Code / Figma / any native app, document.hidden stays
-  // false (Lense is still the active Chrome tab) but sv correctly shows the
-  // native app. document.hasFocus() is false in that case, so we use sv.
-  //
-  // Grace period: if hasFocus() just became false (< 200ms ago), treat the tab
-  // as still in the foreground. Prevents transient focus losses (clicking the
-  // browser address bar, tab strip) from briefly exposing sv — which still
-  // shows the Lense UI in that state — as the recording source or corrupting
-  // _workingCanvas with Lense-UI frames.
-  const focusLostRecently = !document.hasFocus() && (Date.now() - _lastChromeBlurTime < 200);
-  const lenseTabInForeground = !document.hidden && (document.hasFocus() || focusLostRecently);
-
-  // When in full-screen mode and the Lense tab is in the foreground but we
-  // don't yet have a frozen work-screen frame captured, skip drawing this frame
-  // entirely. oc.clearRect already ran above so the offscreen canvas is black.
-  // We must NOT fall back to sv here: sv shows the Lense UI right now, which
-  // would capture the Lense tab into the recording or cause screen-capture
-  // recursion. A few silent black frames at the very start of a recording is
-  // far better than capturing the Lense UI. _workingCanvas will be populated
-  // the moment the user switches to their work app (_workingCanvasReady = true).
-  if (state.isFullScreen && lenseTabInForeground && !state._workingCanvasReady) return;
-
-  // ── Advance zoom animation in DRAW SPACE ────────────────────────────────
-  // We lerp between pre-computed draw rects {sx,sy,sw,sh}, not selection rects.
-  // This ensures sw/sh (the zoom level) animate smoothly — giving the cinematic
-  // push-in/pull-out feel. Constraints are applied once at endpoints, not per frame.
+  // Advance zoom animation in draw space (lerp between pre-computed rects).
   if (state.zoomAnimating) {
     const elapsed  = performance.now() - state.zoomAnimStart;
     const duration = CONFIG.ZOOM_DURATION_MS || 500;
@@ -548,39 +519,82 @@ function renderFrame() {
     if (rawT >= 1) {
       state.zoomAnimating   = false;
       state.zoomCurrentDraw = { ...state.zoomToDraw };
-      // Sync zoomCurrent selection rect for interrupted-animation detection
-      state.zoomCurrent = { ...state.zoomTo };
+      state.zoomCurrent     = { ...state.zoomTo };
     }
   }
-
-  // ── Draw frame ────────────────────────────────────────────────────────────
   const isZoomed = state.zoomActive || state.zoomAnimating;
 
-  const screenSrc = (state.isFullScreen && state._workingCanvas && state._workingCanvasReady && lenseTabInForeground)
-    ? state._workingCanvas
-    : sv;
+  // ── BRANCH A: Lense tab is visible — sv captures Lense UI, must not use it ──
+  // sv shows the Lense UI whenever Chrome has OS focus AND the Lense tab is
+  // active (_chromeFocused + !document.hidden). Drawing sv to the recording
+  // here would capture the UI into the video (causing recursive self-reference).
+  // Instead draw the frozen _workingCanvas (last work-app frame). If it isn't
+  // ready yet (recording just started), clearRect produces a black frame —
+  // which is far better than capturing the Lense UI.
+  const lenseTabVisible = !document.hidden && _chromeFocused;
+  if (state.isFullScreen && lenseTabVisible) {
+    oc.clearRect(0, 0, srcW, srcH);
 
-  if (isZoomed && state.zoomCurrentDraw) {
-    // Use the pre-computed, constraint-applied, lerped draw rect directly
-    let { sx, sy, sw, sh } = state.zoomCurrentDraw;
+    if (state._workingCanvasReady && state._workingCanvas) {
+      if (isZoomed && state.zoomCurrentDraw) {
+        // zoomCurrentDraw is in srcW/srcH space; remap to _workingCanvas space.
+        let { sx, sy, sw, sh } = state.zoomCurrentDraw;
+        const wScaleX = state._workingCanvas.width  / srcW;
+        const wScaleY = state._workingCanvas.height / srcH;
+        sx *= wScaleX; sy *= wScaleY; sw *= wScaleX; sh *= wScaleY;
+        if (sw < state._workingCanvas.width * 0.99 || sh < state._workingCanvas.height * 0.99) {
+          oc.drawImage(state._workingCanvas, sx, sy, sw, sh, 0, 0, srcW, srcH);
+          if (state.zoomActive && !state.zoomAnimating) {
+            oc.save();
+            oc.fillStyle = "rgba(249,115,22,0.88)";
+            oc.roundRect(16, 16, 80, 30, 6);
+            oc.fill();
+            oc.fillStyle = "#fff";
+            oc.font = "bold 13px sans-serif";
+            oc.textBaseline = "middle";
+            oc.fillText("🔍 ZOOM", 30, 31);
+            oc.restore();
+          }
+        } else {
+          oc.drawImage(state._workingCanvas, 0, 0, srcW, srcH);
+        }
+      } else {
+        oc.drawImage(state._workingCanvas, 0, 0, srcW, srcH);
+      }
+    }
+    // else: _workingCanvas not ready → black frame (clearRect above)
 
-    // zoomCurrentDraw is in srcW/srcH coordinate space. When screenSrc is the
-    // working canvas (smaller resolution), re-map the crop rect to that canvas's
-    // coordinate space so zoom crops land on the correct region.
-    if (screenSrc === state._workingCanvas) {
-      const wScaleX = state._workingCanvas.width  / srcW;
-      const wScaleY = state._workingCanvas.height / srcH;
-      sx = sx * wScaleX;
-      sy = sy * wScaleY;
-      sw = sw * wScaleX;
-      sh = sh * wScaleY;
+    if (state.useCam && state.camStream && camVideo.readyState >= 2) {
+      drawCamOnOffscreen(oc, srcW, srcH);
     }
 
-    // Only draw zoomed if meaningfully different from full-screen
-    if (sw < (screenSrc.videoWidth || screenSrc.width) * 0.99 || sh < (screenSrc.videoHeight || screenSrc.height) * 0.99) {
-      oc.drawImage(screenSrc, sx, sy, sw, sh, 0, 0, srcW, srcH);
+    // Thumbnail — show frozen work frame for zoom selection.
+    // NOTE: previously this was skipped by an early return, leaving the
+    // thumbnail stale. Now it always updates.
+    if (state._workingCanvas && state._workingCanvasReady) {
+      thumbCtx.drawImage(state._workingCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+    }
+    if (state.zoomActive && state.zoomRect) {
+      const scaleX = thumbCanvas.width  / srcW;
+      const scaleY = thumbCanvas.height / srcH;
+      const { x, y, w, h } = state.zoomRect;
+      thumbCtx.save();
+      thumbCtx.strokeStyle = "rgba(249,115,22,0.9)";
+      thumbCtx.lineWidth   = 2;
+      thumbCtx.setLineDash([4, 3]);
+      thumbCtx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+      thumbCtx.restore();
+    }
+    return;
+  }
 
-      // Zoom badge — only when fully settled (not mid-animation)
+  // ── BRANCH B: Work app is visible — sv shows real content ─────────────────
+  // sv is at srcW×srcH resolution; draw directly with no coordinate scaling.
+  oc.clearRect(0, 0, srcW, srcH);
+  if (isZoomed && state.zoomCurrentDraw) {
+    const { sx, sy, sw, sh } = state.zoomCurrentDraw;
+    if (sw < srcW * 0.99 || sh < srcH * 0.99) {
+      oc.drawImage(sv, sx, sy, sw, sh, 0, 0, srcW, srcH);
       if (state.zoomActive && !state.zoomAnimating) {
         oc.save();
         oc.fillStyle = "rgba(249,115,22,0.88)";
@@ -593,42 +607,32 @@ function renderFrame() {
         oc.restore();
       }
     } else {
-      oc.drawImage(screenSrc, 0, 0, srcW, srcH);
+      oc.drawImage(sv, 0, 0, srcW, srcH);
     }
   } else {
-    // Normal full-screen draw
-    oc.drawImage(screenSrc, 0, 0, srcW, srcH);
+    oc.drawImage(sv, 0, 0, srcW, srcH);
   }
 
-  // Webcam always drawn regardless of active tab
   if (state.useCam && state.camStream && camVideo.readyState >= 2) {
     drawCamOnOffscreen(oc, srcW, srcH);
   }
 
-  // ── Update working canvas (full-screen mode only) ────────────────────────
-  // sv has good working-screen content whenever Lense tab is NOT in the
-  // foreground — whether the user is in another browser tab (document.hidden)
-  // or in a native app (!document.hasFocus()). Capture it in both cases.
-  if (state.isFullScreen && state._workingCanvas && !lenseTabInForeground) {
+  // Capture sv into the frozen work-frame buffer. This always runs in Branch B
+  // so there is no code path that can leave _workingCanvas un-populated when
+  // the user is in their work app.
+  if (state.isFullScreen && state._workingCanvas) {
     state._workingCtx.drawImage(sv,
       0, 0, state._workingCanvas.width, state._workingCanvas.height
     );
     state._workingCanvasReady = true;
   }
 
-  // ── Update thumbnail (visible in Lense tab for zoom selection) ────────────
-  if (state.isFullScreen && state._workingCanvas) {
-    // Full-screen mode: always use frozen working canvas — never live sv
-    // (sv shows Lense tab when visible, causing recursion)
-    thumbCtx.drawImage(state._workingCanvas,
-      0, 0, thumbCanvas.width, thumbCanvas.height
-    );
+  // Thumbnail
+  if (state.isFullScreen && state._workingCanvas && state._workingCanvasReady) {
+    thumbCtx.drawImage(state._workingCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
   } else {
-    // Window/tab mode: sv always shows the target content — draw directly
     thumbCtx.drawImage(sv, 0, 0, thumbCanvas.width, thumbCanvas.height);
   }
-
-  // Draw active zoom rect outline on thumbnail so user sees current zoom region
   if (state.zoomActive && state.zoomRect) {
     const scaleX = thumbCanvas.width  / srcW;
     const scaleY = thumbCanvas.height / srcH;
