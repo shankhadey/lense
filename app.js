@@ -501,6 +501,15 @@ function renderFrame() {
   // Guard: video must be ready
   if (sv.readyState < 2) return;
 
+  // Seed _workingCanvas from the very first valid sv frame.
+  // Ensures it's never empty — prevents both black frames AND infinite recursion
+  // (a static seeded frame shown while on the Lense tab is safe; a live sv feed
+  // would cause the screen capture to record itself recursively).
+  if (state.isFullScreen && state._workingCanvas && !state._workingCanvasReady) {
+    state._workingCtx.drawImage(sv, 0, 0, state._workingCanvas.width, state._workingCanvas.height);
+    state._workingCanvasReady = true;
+  }
+
   // ── Draw to offscreen canvas (the recording) ──────────────────────────────
   oc.clearRect(0, 0, srcW, srcH);
 
