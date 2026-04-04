@@ -523,9 +523,13 @@ function renderFrame() {
   // ── Draw frame ────────────────────────────────────────────────────────────
   const isZoomed = state.zoomActive || state.zoomAnimating;
 
-  // For full-screen: when user is on Lense tab, sv shows Lense UI — use frozen
-  // working canvas instead so recording only contains working screen content
-  const screenSrc = (state.isFullScreen && state._workingCanvas && !document.hidden)
+  // For full-screen: sv shows Lense UI only when Chrome is the foreground app
+  // AND the Lense tab is active. document.hidden alone isn't enough — when the
+  // user alt-tabs to VS Code / Figma / any native app, document.hidden stays
+  // false (Lense is still the active Chrome tab) but sv correctly shows the
+  // native app. document.hasFocus() is false in that case, so we use sv.
+  const lenseTabInForeground = !document.hidden && document.hasFocus();
+  const screenSrc = (state.isFullScreen && state._workingCanvas && lenseTabInForeground)
     ? state._workingCanvas
     : sv;
 
@@ -575,11 +579,10 @@ function renderFrame() {
   }
 
   // ── Update working canvas (full-screen mode only) ────────────────────────
-  // While Lense tab is hidden: sv shows the actual working screen. Capture it
-  // continuously into _workingCanvas. The moment Lense tab becomes visible,
-  // sv starts showing Lense tab instead. By updating _workingCanvas ONLY while
-  // hidden, we guarantee it always contains working screen content, not Lense UI.
-  if (state.isFullScreen && state._workingCanvas && document.hidden) {
+  // sv has good working-screen content whenever Lense tab is NOT in the
+  // foreground — whether the user is in another browser tab (document.hidden)
+  // or in a native app (!document.hasFocus()). Capture it in both cases.
+  if (state.isFullScreen && state._workingCanvas && !lenseTabInForeground) {
     state._workingCtx.drawImage(sv,
       0, 0, state._workingCanvas.width, state._workingCanvas.height
     );
