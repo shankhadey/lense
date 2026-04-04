@@ -369,9 +369,12 @@ function getSupportedMimeType() {
 // Event-driven so it's reliable across all frames without calling hasFocus() per tick.
 // Used to detect when the Lense tab is visible on screen (and sv therefore shows
 // Lense UI rather than the user's work app).
-let _chromeFocused = document.hasFocus();
-window.addEventListener("focus", () => { _chromeFocused = true; });
-window.addEventListener("blur",  () => { _chromeFocused = false; });
+// Track the last time Chrome lost OS focus — used for address-bar grace period.
+// When the user clicks Chrome's address bar, hasFocus() dips to false but sv
+// still captures the Lense tab; a 200ms grace period prevents _workingCanvas
+// from being contaminated during that transient.
+let _lastBlurTime = document.hasFocus() ? -Infinity : Date.now();
+window.addEventListener("blur", () => { _lastBlurTime = Date.now(); });
 
 // ─── Web Worker render driver ─────────────────────────────────────────────────
 // Chrome throttles timers in background tabs. Web Workers are exempt.
@@ -526,12 +529,20 @@ function renderFrame() {
 
   // ── BRANCH A: Lense tab is visible — sv captures Lense UI, must not use it ──
   // sv shows the Lense UI whenever Chrome has OS focus AND the Lense tab is
-  // active (_chromeFocused + !document.hidden). Drawing sv to the recording
-  // here would capture the UI into the video (causing recursive self-reference).
-  // Instead draw the frozen _workingCanvas (last work-app frame). If it isn't
-  // ready yet (recording just started), clearRect produces a black frame —
-  // which is far better than capturing the Lense UI.
-  const lenseTabVisible = !document.hidden && _chromeFocused;
+  // active. Drawing sv to the recording would capture the UI into the video
+  // (causing recursive self-reference). Instead draw frozen _workingCanvas.
+  //
+  // Use document.hasFocus() synchronously rather than an event-cached flag.
+  // hasFocus() updates at the SAME TIME sv switches to capturing the Lense tab;
+  // the window.focus event fires AFTER. An event-cached flag would have a race
+  // window of 1-2 frames where sv already shows Lense UI but the flag still
+  // says "not focused" → Branch B contaminates _workingCanvas → recursion.
+  //
+  // Grace period: if hasFocus() just became false (<200ms ago), treat the tab
+  // as still visible. Handles address-bar clicks where hasFocus() dips but sv
+  // still captures the Lense tab.
+  const justLostFocus = !document.hasFocus() && (Date.now() - _lastBlurTime < 200);
+  const lenseTabVisible = !document.hidden && (document.hasFocus() || justLostFocus);
   if (state.isFullScreen && lenseTabVisible) {
     oc.clearRect(0, 0, srcW, srcH);
 
