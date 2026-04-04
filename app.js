@@ -1641,6 +1641,7 @@ async function runShareUpload() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         video_id,
+        video_url: public_url,
         zoom_events: state.zoomEvents,
         duration_ms: state.durationMs,
         ai_results: state._aiResults || null,

@@ -170,6 +170,7 @@ class UploadRequestBody(BaseModel):
 
 class ShareBody(BaseModel):
     video_id: str
+    video_url: str
     zoom_events: list
     duration_ms: int
     ai_results: dict | None = None
@@ -235,7 +236,7 @@ async def share(body: ShareBody):
         raise HTTPException(404, "Video not found")
 
     sidecar = {
-        "video_url": f"{CF_R2_PUBLIC_URL}/recordings/{body.video_id}/",
+        "video_url": body.video_url,
         "zoom_events": body.zoom_events,
         "duration_ms": body.duration_ms,
         "ai_results": body.ai_results,
