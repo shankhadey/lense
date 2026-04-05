@@ -370,6 +370,7 @@ function getSupportedMimeType() {
 // still captures the Lense tab; a 200ms grace period prevents _workingCanvas
 // from being contaminated during that transient.
 let _lastBlurTime = document.hasFocus() ? -Infinity : Date.now();
+let _prevHasFocus  = document.hasFocus();
 window.addEventListener("blur", () => { _lastBlurTime = Date.now(); });
 
 // ─── Web Worker render driver ─────────────────────────────────────────────────
@@ -537,8 +538,15 @@ function renderFrame() {
   // Grace period: if hasFocus() just became false (<200ms ago), treat the tab
   // as still visible. Handles address-bar clicks where hasFocus() dips but sv
   // still captures the Lense tab.
-  const justLostFocus = !document.hasFocus() && (Date.now() - _lastBlurTime < 200);
-  const lenseTabVisible = !document.hidden && (document.hasFocus() || justLostFocus);
+  const hasFocus = document.hasFocus();
+  // Eagerly detect focus loss before the async blur event fires.
+  // When clicking a native app, hasFocus() drops immediately (OS state) while
+  // window.blur fires later via IPC. The renderFrame between them would otherwise
+  // run Branch B with a stale sv frame (Lense UI) → _workingCanvas contamination.
+  if (_prevHasFocus && !hasFocus) _lastBlurTime = Date.now();
+  _prevHasFocus = hasFocus;
+  const justLostFocus = !hasFocus && (Date.now() - _lastBlurTime < 200);
+  const lenseTabVisible = !document.hidden && (hasFocus || justLostFocus);
   if (state.isFullScreen && lenseTabVisible) {
     oc.clearRect(0, 0, srcW, srcH);
 
