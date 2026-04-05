@@ -246,6 +246,14 @@ async function startRecording() {
     }
     state._workingCanvas.width  = 1280; // fixed working resolution — enough for zoom selection
     state._workingCanvas.height = Math.round(1280 * srcH / srcW);
+    // Prev-frame backup canvas — same dimensions, cleared on recording start.
+    if (!_prevWorkingCanvas) {
+      _prevWorkingCanvas = document.createElement("canvas");
+      _prevWorkingCtx    = _prevWorkingCanvas.getContext("2d");
+    }
+    _prevWorkingCanvas.width  = 1280;
+    _prevWorkingCanvas.height = state._workingCanvas.height;
+    _prevWorkingCanvasReady   = false;
   }
 
   // ── STEP 6: Reset zoom + event state ────────────────────────────────────
@@ -372,6 +380,30 @@ function getSupportedMimeType() {
 let _lastBlurTime = document.hasFocus() ? -Infinity : Date.now();
 let _prevHasFocus  = document.hasFocus();
 window.addEventListener("blur", () => { _lastBlurTime = Date.now(); });
+
+// One-frame-ago backup of _workingCanvas — used by the window.focus handler to
+// undo contamination from the Branch B lag frame that runs when sv has already
+// updated to show Lense UI but hasFocus() IPC hasn't arrived yet.
+let _prevWorkingCanvas      = null;
+let _prevWorkingCtx         = null;
+let _prevWorkingCanvasReady = false;
+
+window.addEventListener("focus", () => {
+  if (!state.recording || !state.isFullScreen || !state._workingCanvas || !state._workingCtx) return;
+  if (_prevWorkingCanvasReady && _prevWorkingCtx) {
+    // Restore _workingCanvas from the one-frame-ago backup.
+    // The last Branch B tick may have captured sv=Lense (race: VSYNC fires before
+    // the hasFocus IPC reaches the renderer). The prev-frame is guaranteed to
+    // predate that contamination, so restoring it eliminates the recursive UI.
+    state._workingCtx.drawImage(_prevWorkingCanvas, 0, 0,
+      state._workingCanvas.width, state._workingCanvas.height);
+    // state._workingCanvasReady stays true — prev content is valid native-app frame
+  } else {
+    // Prev not yet populated (user returned in <2 Branch B frames, ~66ms after
+    // grace expired). Invalidate to avoid showing any stale or Lense-UI content.
+    state._workingCanvasReady = false;
+  }
+});
 
 // ─── Web Worker render driver ─────────────────────────────────────────────────
 // Chrome throttles timers in background tabs. Web Workers are exempt.
@@ -605,6 +637,14 @@ function renderFrame() {
   // so there is no code path that can leave _workingCanvas un-populated when
   // the user is in their work app.
   if (state.isFullScreen && state._workingCanvas) {
+    // Double-buffer: save current frame to prev BEFORE overwriting.
+    // On window.focus, we restore from _prevWorkingCanvas to undo any
+    // contamination written by the lag frame where sv=Lense but hasFocus=false.
+    if (state._workingCanvasReady && _prevWorkingCtx) {
+      _prevWorkingCtx.drawImage(state._workingCanvas, 0, 0,
+        _prevWorkingCanvas.width, _prevWorkingCanvas.height);
+      _prevWorkingCanvasReady = true;
+    }
     state._workingCtx.drawImage(sv,
       0, 0, state._workingCanvas.width, state._workingCanvas.height
     );
@@ -967,6 +1007,10 @@ function cleanupStreams() {
   if (state._workingCtx && state._workingCanvas) {
     state._workingCtx.clearRect(0, 0, state._workingCanvas.width, state._workingCanvas.height);
   }
+  if (_prevWorkingCtx && _prevWorkingCanvas) {
+    _prevWorkingCtx.clearRect(0, 0, _prevWorkingCanvas.width, _prevWorkingCanvas.height);
+  }
+  _prevWorkingCanvasReady = false;
   recDot.classList.add("hidden");
   recTimer.textContent = "00:00";
 }
