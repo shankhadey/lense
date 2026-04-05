@@ -365,10 +365,6 @@ function getSupportedMimeType() {
   return types.find(t => MediaRecorder.isTypeSupported(t)) || "";
 }
 
-// Tracks whether the Chrome window currently has OS focus.
-// Event-driven so it's reliable across all frames without calling hasFocus() per tick.
-// Used to detect when the Lense tab is visible on screen (and sv therefore shows
-// Lense UI rather than the user's work app).
 // Track the last time Chrome lost OS focus — used for address-bar grace period.
 // When the user clicks Chrome's address bar, hasFocus() dips to false but sv
 // still captures the Lense tab; a 200ms grace period prevents _workingCanvas
@@ -555,17 +551,7 @@ function renderFrame() {
         sx *= wScaleX; sy *= wScaleY; sw *= wScaleX; sh *= wScaleY;
         if (sw < state._workingCanvas.width * 0.99 || sh < state._workingCanvas.height * 0.99) {
           oc.drawImage(state._workingCanvas, sx, sy, sw, sh, 0, 0, srcW, srcH);
-          if (state.zoomActive && !state.zoomAnimating) {
-            oc.save();
-            oc.fillStyle = "rgba(249,115,22,0.88)";
-            oc.roundRect(16, 16, 80, 30, 6);
-            oc.fill();
-            oc.fillStyle = "#fff";
-            oc.font = "bold 13px sans-serif";
-            oc.textBaseline = "middle";
-            oc.fillText("🔍 ZOOM", 30, 31);
-            oc.restore();
-          }
+          if (state.zoomActive && !state.zoomAnimating) drawZoomBadge(oc);
         } else {
           oc.drawImage(state._workingCanvas, 0, 0, srcW, srcH);
         }
@@ -573,7 +559,6 @@ function renderFrame() {
         oc.drawImage(state._workingCanvas, 0, 0, srcW, srcH);
       }
     }
-    // else: _workingCanvas not ready → black frame (clearRect above)
 
     if (state.useCam && state.camStream && camVideo.readyState >= 2) {
       drawCamOnOffscreen(oc, srcW, srcH);
@@ -585,17 +570,7 @@ function renderFrame() {
     if (state._workingCanvas && state._workingCanvasReady) {
       thumbCtx.drawImage(state._workingCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
     }
-    if (state.zoomActive && state.zoomRect) {
-      const scaleX = thumbCanvas.width  / srcW;
-      const scaleY = thumbCanvas.height / srcH;
-      const { x, y, w, h } = state.zoomRect;
-      thumbCtx.save();
-      thumbCtx.strokeStyle = "rgba(249,115,22,0.9)";
-      thumbCtx.lineWidth   = 2;
-      thumbCtx.setLineDash([4, 3]);
-      thumbCtx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
-      thumbCtx.restore();
-    }
+    drawThumbZoomRect(srcW, srcH);
     return;
   }
 
@@ -606,17 +581,7 @@ function renderFrame() {
     const { sx, sy, sw, sh } = state.zoomCurrentDraw;
     if (sw < srcW * 0.99 || sh < srcH * 0.99) {
       oc.drawImage(sv, sx, sy, sw, sh, 0, 0, srcW, srcH);
-      if (state.zoomActive && !state.zoomAnimating) {
-        oc.save();
-        oc.fillStyle = "rgba(249,115,22,0.88)";
-        oc.roundRect(16, 16, 80, 30, 6);
-        oc.fill();
-        oc.fillStyle = "#fff";
-        oc.font = "bold 13px sans-serif";
-        oc.textBaseline = "middle";
-        oc.fillText("🔍 ZOOM", 30, 31);
-        oc.restore();
-      }
+      if (state.zoomActive && !state.zoomAnimating) drawZoomBadge(oc);
     } else {
       oc.drawImage(sv, 0, 0, srcW, srcH);
     }
@@ -644,17 +609,35 @@ function renderFrame() {
   } else {
     thumbCtx.drawImage(sv, 0, 0, thumbCanvas.width, thumbCanvas.height);
   }
-  if (state.zoomActive && state.zoomRect) {
-    const scaleX = thumbCanvas.width  / srcW;
-    const scaleY = thumbCanvas.height / srcH;
-    const { x, y, w, h } = state.zoomRect;
-    thumbCtx.save();
-    thumbCtx.strokeStyle = "rgba(249,115,22,0.9)";
-    thumbCtx.lineWidth   = 2;
-    thumbCtx.setLineDash([4, 3]);
-    thumbCtx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
-    thumbCtx.restore();
-  }
+  drawThumbZoomRect(srcW, srcH);
+}
+
+// Draw the orange ZOOM badge onto the offscreen recording canvas.
+// Called only when zoom is fully settled (not mid-animation).
+function drawZoomBadge(oc) {
+  oc.save();
+  oc.fillStyle = "rgba(249,115,22,0.88)";
+  oc.roundRect(16, 16, 80, 30, 6);
+  oc.fill();
+  oc.fillStyle = "#fff";
+  oc.font = "bold 13px sans-serif";
+  oc.textBaseline = "middle";
+  oc.fillText("🔍 ZOOM", 30, 31);
+  oc.restore();
+}
+
+// Draw the active zoom selection outline onto the thumbnail canvas.
+function drawThumbZoomRect(srcW, srcH) {
+  if (!state.zoomActive || !state.zoomRect) return;
+  const scaleX = thumbCanvas.width  / srcW;
+  const scaleY = thumbCanvas.height / srcH;
+  const { x, y, w, h } = state.zoomRect;
+  thumbCtx.save();
+  thumbCtx.strokeStyle = "rgba(249,115,22,0.9)";
+  thumbCtx.lineWidth   = 2;
+  thumbCtx.setLineDash([4, 3]);
+  thumbCtx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+  thumbCtx.restore();
 }
 
 // Draw webcam onto offscreen canvas at a fixed corner position
