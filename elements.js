@@ -91,7 +91,7 @@ function renderAIMarkers(trackEl, totalMs, aiSuggestions) {
  * @param {Array} aiSuggestions    state.aiSuggestions
  * @param {object} callbacks       { onAccept, onAcceptAll, onDismiss, onRemove, onLabelEdit, onTypeChange }
  */
-function renderSuggestionCards(listEl, aiSuggestions, callbacks) {
+function renderSuggestionCards(listEl, aiSuggestions, callbacks, showDismissed = false) {
   listEl.innerHTML = '';
 
   const visible = aiSuggestions.filter(s => !s.dismissed);
@@ -104,7 +104,7 @@ function renderSuggestionCards(listEl, aiSuggestions, callbacks) {
 
   visible.forEach(s => listEl.appendChild(buildCard(s, false, callbacks)));
 
-  if (dismissed.length) {
+  if (dismissed.length && showDismissed) {
     const sep = document.createElement('div');
     sep.className = 'ai-dismissed-sep';
     sep.textContent = `Dismissed (${dismissed.length})`;
@@ -154,11 +154,13 @@ function buildCard(s, isDismissed, cb) {
 
     <div class="ai-card-actions">
       ${isDismissed ? `
-        <button class="ai-action-btn sm" data-action="accept" data-id="${s._id}">Restore</button>
+        <button class="ai-action-btn sm" data-action="restore" data-id="${s._id}">Restore</button>
         <button class="ai-ghost-btn sm danger" data-action="remove" data-id="${s._id}">Remove</button>
       ` : `
-        <button class="ai-action-btn sm" data-action="accept" data-id="${s._id}">Apply${isConflict ? ' selected' : ''}</button>
-        ${isConflict ? `<button class="ai-ghost-btn sm" data-action="accept-all" data-id="${s._id}">Apply all</button>` : ''}
+        ${s.accepted
+          ? `<button class="ai-action-btn sm" disabled>Applied ✓</button>`
+          : `<button class="ai-action-btn sm" data-action="accept" data-id="${s._id}">Apply${isConflict ? ' selected' : ''}</button>
+        ${isConflict ? `<button class="ai-ghost-btn sm" data-action="accept-all" data-id="${s._id}">Apply all</button>` : ''}`}
         <button class="ai-ghost-btn sm" data-action="dismiss" data-id="${s._id}">Dismiss</button>
         <button class="ai-ghost-btn sm danger" data-action="remove" data-id="${s._id}">Remove</button>
       `}
@@ -180,6 +182,8 @@ function buildCard(s, isDismissed, cb) {
         cb.onAccept(s, true);
       } else if (action === 'dismiss') {
         cb.onDismiss(s);
+      } else if (action === 'restore') {
+        cb.onRestore(s);
       } else if (action === 'remove') {
         cb.onRemove(s);
       }

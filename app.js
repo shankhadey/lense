@@ -1202,6 +1202,26 @@ function showReviewPanel(videoUrl, mimeType, ext) {
     if (ph && dur) ph.style.left = (rv.currentTime / (dur / 1000) * 100) + "%";
   };
 
+  // AI zoom preview: apply CSS transform to mirror what the re-render will do
+  if (rv._aiZoomTimeUpdate) rv.removeEventListener('timeupdate', rv._aiZoomTimeUpdate);
+  rv._aiZoomTimeUpdate = () => {
+    const tMs = rv.currentTime * 1000;
+    const z = elements.items.find(
+      e => e.type === 'zoom' && e.source === 'ai' && typeof e.cx === 'number' &&
+           tMs >= e.t && tMs <= e.t + e.duration
+    );
+    if (z) {
+      rv.style.transition    = 'transform 0.3s ease';
+      rv.style.transform     = 'scale(2)';
+      rv.style.transformOrigin = `${z.cx * 100}% ${z.cy * 100}%`;
+    } else {
+      rv.style.transition    = 'transform 0.3s ease';
+      rv.style.transform     = '';
+      rv.style.transformOrigin = '';
+    }
+  };
+  rv.addEventListener('timeupdate', rv._aiZoomTimeUpdate);
+
   // Timeline seek on click
   $("rv-timeline-wrap").addEventListener("click", e => {
     const r = $("rv-timeline-wrap").getBoundingClientRect();
@@ -1786,6 +1806,11 @@ function initAIPanel(durMs) {
 
   // Accept-all / show-dismissed
   $('btn-accept-all-ai')?.addEventListener('click', acceptAllSuggestions);
+  $('btn-show-dismissed')?.addEventListener('click', () => {
+    _showDismissed = !_showDismissed;
+    renderSuggestions();
+    updateDismissedBtn();
+  });
 
   // Auto-start based on autonomy level
   const startAct = canAct('transcribe', 'start');
@@ -2019,13 +2044,23 @@ async function _runSuggestionsInternal(transcript) {
   }
 }
 
+let _showDismissed = false;
+
+function updateDismissedBtn() {
+  const btn = $('btn-show-dismissed');
+  if (!btn) return;
+  const count = state.aiSuggestions.filter(s => s.dismissed).length;
+  btn.textContent = `${_showDismissed ? 'Hide' : 'Show'} dismissed (${count})`;
+}
+
 function renderSuggestions() {
   renderSuggestionCards($('ai-suggestion-list'), state.aiSuggestions, {
     onAccept:    (s, applyAll) => { applySuggestion(s, applyAll); renderSuggestions(); refreshAITimeline(); },
-    onDismiss:   (s) => { s.dismissed = true; renderSuggestions(); refreshAITimeline(); },
-    onRemove:    (s) => { state.aiSuggestions = state.aiSuggestions.filter(x => x._id !== s._id); renderSuggestions(); refreshAITimeline(); },
+    onDismiss:   (s) => { s.dismissed = true; renderSuggestions(); refreshAITimeline(); updateDismissedBtn(); },
+    onRestore:   (s) => { s.dismissed = false; renderSuggestions(); refreshAITimeline(); updateDismissedBtn(); },
+    onRemove:    (s) => { state.aiSuggestions = state.aiSuggestions.filter(x => x._id !== s._id); renderSuggestions(); refreshAITimeline(); updateDismissedBtn(); },
     onLabelEdit: () => {},
-  });
+  }, _showDismissed);
 }
 
 // skipRebuild lets acceptAllSuggestions batch the timeline rebuild.
@@ -2034,7 +2069,7 @@ function applySuggestion(s, applyAll, skipRebuild = false) {
   newEls.forEach(el => elements.add(el));
 
   newEls.filter(e => e.type === 'zoom').forEach(el => {
-    state.zoomEvents.push({ t: el.t,              type: 'in',  source: 'ai' });
+    state.zoomEvents.push({ t: el.t,              type: 'in',  source: 'ai', cx: el.cx, cy: el.cy });
     state.zoomEvents.push({ t: el.t + el.duration, type: 'out', source: 'ai' });
   });
 
@@ -2147,9 +2182,17 @@ async function runRerender() {
     state.rerenderedBlobUrl = url;
     const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
 
-    // Update video player to show re-rendered version
+    // Update video player to show re-rendered version (zooms baked in — remove CSS preview)
     const rv = $('rv-video');
-    if (rv) rv.src = url;
+    if (rv) {
+      rv.src = url;
+      rv.style.transform = '';
+      rv.style.transformOrigin = '';
+      if (rv._aiZoomTimeUpdate) {
+        rv.removeEventListener('timeupdate', rv._aiZoomTimeUpdate);
+        rv._aiZoomTimeUpdate = null;
+      }
+    }
 
     // Update download button to use re-rendered version
     $('rv-btn-download-webm').onclick = () => downloadVideo(url, ext);
@@ -2216,6 +2259,7 @@ async function rerenderVideo(srcBlob, onProgress) {
       const rerenderChunks = [];
       recorder.ondataavailable = e => { if (e.data.size > 0) rerenderChunks.push(e.data); };
       recorder.onstop = () => {
+        video.remove();
         URL.revokeObjectURL(video.src);
         audioCtx.close();
         const finalBlob = new Blob(rerenderChunks, { type: mimeType });
@@ -2225,6 +2269,10 @@ async function rerenderVideo(srcBlob, onProgress) {
       recorder.start(200);
       if (audioSource) audioSource.start(0);
       video.playbackRate = 4;
+
+      // Must be in DOM for requestVideoFrameCallback to fire (compositor requires it)
+      video.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px';
+      document.body.appendChild(video);
 
       video.requestVideoFrameCallback(function renderLoop(now, meta) {
         const tMs = meta.mediaTime * 1000;
@@ -2236,7 +2284,7 @@ async function rerenderVideo(srcBlob, onProgress) {
         // Apply elements (spotlights, callouts)
         drawElements(ctx, W, H, tMs);
 
-        onProgress(Math.min(0.99, meta.mediaTime / duration));
+        onProgress(Math.min(0.99, isFinite(duration) && duration > 0 ? meta.mediaTime / duration : 0));
 
         if (!video.ended && video.readyState >= 2) {
           video.requestVideoFrameCallback(renderLoop);

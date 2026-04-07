@@ -447,7 +447,7 @@ async function suggestElements(videoBlob, transcript, onProgress = () => {}) {
   onProgress(0.80);
 
   // Group into moments and pick best peak per group
-  const moments = groupByProximity(activity, 1.5);
+  const moments = groupByProximity(activity, 0.5);
   const suggestions = [];
   let lastT = -Infinity;
 

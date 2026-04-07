@@ -472,7 +472,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .transcript-refine-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .transcript-refine-actions { display: flex; gap: 6px; align-items: center; }
-.transcript-script { width: 100%; min-height: 90px; padding: 10px; background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-body); font-size: 13px; line-height: 1.6; resize: vertical; }
+.transcript-script { width: 100%; min-height: 90px; padding: 10px; margin-top: 8px; background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-body); font-size: 13px; line-height: 1.6; resize: vertical; }
 .transcript-script:focus { outline: none; border-color: var(--accent); }
 
 
