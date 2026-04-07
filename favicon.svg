@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!--
+    Matches the CSS .logo-mark:
+      conic-gradient(from 180deg, #f97316 0deg, transparent 120deg, #f97316 360deg)
+      with an inner circle cutout (inset: 5px on a 28px element → ~64% inner radius).
+
+    Ring: outer r=14, inner r=9, center=(16,16).
+    Gap: 80° centered on the transparent peak (upper-left, SVG 210°).
+    Visible arc: 280° clockwise from SVG 250° to SVG 170°.
+  -->
+  <path fill="#f97316"
+    d="M11.21 2.84 A14 14 0 1 1 2.21 18.44 L7.13 17.57 A9 9 0 1 0 12.92 7.54 Z"/>
+</svg>

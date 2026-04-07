@@ -48,7 +48,6 @@ const state = {
   chunks:         [],
   startTime:      null,
   timerInterval:  null,
-  rafId:          null,
   _screenVideo:   null,   // decodes screen stream
   _offscreen:     null,   // offscreen canvas — never in DOM
   _offCtx:        null,   // offscreen canvas 2d context
@@ -93,8 +92,9 @@ const state = {
   // causing recursion. This canvas freezes the last frame of the working screen
   // the instant you arrive at the Lense tab — no race condition.
   // For window/tab recordings: not used (sv always shows the correct content).
-  _workingCanvas: null,
-  _workingCtx:    null,
+  _workingCanvas:      null,
+  _workingCtx:         null,
+  _workingCanvasReady: false,  // true after first frame captured; guards against black frames at recording start
 
   // Legacy snapshot (kept for fallback)
   _thumbSnapshot: null,
@@ -245,6 +245,16 @@ async function startRecording() {
     }
     state._workingCanvas.width  = 1280; // fixed working resolution — enough for zoom selection
     state._workingCanvas.height = Math.round(1280 * srcH / srcW);
+    // Prev-frame backup canvas — same dimensions, cleared on recording start.
+    if (!_prevWorkingCanvas) {
+      _prevWorkingCanvas = document.createElement("canvas");
+      _prevWorkingCtx    = _prevWorkingCanvas.getContext("2d");
+    }
+    _prevWorkingCanvas.width   = 1280;
+    _prevWorkingCanvas.height  = state._workingCanvas.height;
+    _prevWorkingCanvasReady    = false;
+    _prevWorkingCanvasSaveTime = 0;
+    _wasLenseTabVisible        = false;
   }
 
   // ── STEP 6: Reset zoom + event state ────────────────────────────────────
@@ -252,8 +262,9 @@ async function startRecording() {
   state.zoomRect    = null;
   state.camX = state.camY = null;
   state.zoomEvents     = [];
-  state.durationMs     = 0;
-  state._thumbSnapshot = null;
+  state.durationMs          = 0;
+  state._thumbSnapshot      = null;
+  state._workingCanvasReady = false;
   updateZoomUI();
 
   // ── STEP 7: Switch to recorder view ──────────────────────────────────────
@@ -362,6 +373,35 @@ function getSupportedMimeType() {
   ];
   return types.find(t => MediaRecorder.isTypeSupported(t)) || "";
 }
+
+// Track the last time Chrome lost OS focus — used for address-bar grace period.
+// When the user clicks Chrome's address bar, hasFocus() dips to false but sv
+// still captures the Lense tab; a 200ms grace period prevents _workingCanvas
+// from being contaminated during that transient.
+let _lastBlurTime = document.hasFocus() ? -Infinity : Date.now();
+let _prevHasFocus  = document.hasFocus();
+window.addEventListener("blur", () => { _lastBlurTime = Date.now(); });
+
+// One-frame-ago backup of _workingCanvas — used by the window.focus handler to
+// undo contamination from the Branch B lag frame that runs when sv has already
+// updated to show Lense UI but hasFocus() IPC hasn't arrived yet.
+let _prevWorkingCanvas        = null;
+let _prevWorkingCtx           = null;
+let _prevWorkingCanvasReady   = false;
+let _prevWorkingCanvasSaveTime = 0;     // throttle: save at most once per 200ms
+let _wasLenseTabVisible        = false; // track Branch B→A transitions for restore
+
+// Redundant backup: if window.focus fires (reliably), also restore there.
+// Primary restore path is the B→A transition inside renderFrame (see below).
+window.addEventListener("focus", () => {
+  if (!state.recording || !state.isFullScreen || !state._workingCanvas || !state._workingCtx) return;
+  if (_prevWorkingCanvasReady && _prevWorkingCtx) {
+    state._workingCtx.drawImage(_prevWorkingCanvas, 0, 0,
+      state._workingCanvas.width, state._workingCanvas.height);
+    // _workingCanvasReady stays true — restored content is valid native-app frame
+  }
+  // else: leave _workingCanvas/_workingCanvasReady as-is
+});
 
 // ─── Web Worker render driver ─────────────────────────────────────────────────
 // Chrome throttles timers in background tabs. Web Workers are exempt.
@@ -499,13 +539,7 @@ function renderFrame() {
   // Guard: video must be ready
   if (sv.readyState < 2) return;
 
-  // ── Draw to offscreen canvas (the recording) ──────────────────────────────
-  oc.clearRect(0, 0, srcW, srcH);
-
-  // ── Advance zoom animation in DRAW SPACE ────────────────────────────────
-  // We lerp between pre-computed draw rects {sx,sy,sw,sh}, not selection rects.
-  // This ensures sw/sh (the zoom level) animate smoothly — giving the cinematic
-  // push-in/pull-out feel. Constraints are applied once at endpoints, not per frame.
+  // Advance zoom animation in draw space (lerp between pre-computed rects).
   if (state.zoomAnimating) {
     const elapsed  = performance.now() - state.zoomAnimStart;
     const duration = CONFIG.ZOOM_DURATION_MS || 500;
@@ -515,109 +549,166 @@ function renderFrame() {
     if (rawT >= 1) {
       state.zoomAnimating   = false;
       state.zoomCurrentDraw = { ...state.zoomToDraw };
-      // Sync zoomCurrent selection rect for interrupted-animation detection
-      state.zoomCurrent = { ...state.zoomTo };
+      state.zoomCurrent     = { ...state.zoomTo };
     }
   }
-
-  // ── Draw frame ────────────────────────────────────────────────────────────
   const isZoomed = state.zoomActive || state.zoomAnimating;
 
-  if (isZoomed && state.zoomCurrentDraw) {
-    // Use the pre-computed, constraint-applied, lerped draw rect directly
-    const { sx, sy, sw, sh } = state.zoomCurrentDraw;
+  // ── BRANCH A: Lense tab is visible — sv captures Lense UI, must not use it ──
+  // sv shows the Lense UI whenever Chrome has OS focus AND the Lense tab is
+  // active. Drawing sv to the recording would capture the UI into the video
+  // (causing recursive self-reference). Instead draw frozen _workingCanvas.
+  //
+  // Use document.hasFocus() synchronously rather than an event-cached flag.
+  // hasFocus() updates at the SAME TIME sv switches to capturing the Lense tab;
+  // the window.focus event fires AFTER. An event-cached flag would have a race
+  // window of 1-2 frames where sv already shows Lense UI but the flag still
+  // says "not focused" → Branch B contaminates _workingCanvas → recursion.
+  //
+  // Grace period: if hasFocus() just became false (<200ms ago), treat the tab
+  // as still visible. Handles address-bar clicks where hasFocus() dips but sv
+  // still captures the Lense tab.
+  const hasFocus = document.hasFocus();
+  // Eagerly detect focus loss before the async blur event fires.
+  // When clicking a native app, hasFocus() drops immediately (OS state) while
+  // window.blur fires later via IPC. The renderFrame between them would otherwise
+  // run Branch B with a stale sv frame (Lense UI) → _workingCanvas contamination.
+  if (_prevHasFocus && !hasFocus) _lastBlurTime = Date.now();
+  _prevHasFocus = hasFocus;
+  const justLostFocus = !hasFocus && (Date.now() - _lastBlurTime < 200);
+  const lenseTabVisible = !document.hidden && (hasFocus || justLostFocus);
 
-    // Only draw zoomed if meaningfully different from full-screen
+  // ── Branch B→A transition: lenseTabVisible just became true ────────────────
+  // This fires on the render tick AFTER all lag frames finish (lag frames have
+  // lenseTabVisible=false). Restoring here mirrors how the browser-tab path works
+  // implicitly: document.hidden flipping false→true triggers a clean B→A without
+  // any window.focus event dependency.
+  //
+  // The throttled _prevWorkingCanvas (saved at most once per 200ms) is guaranteed
+  // to contain pre-contamination native-app content even if 2+ lag frames ran.
+  if (state.isFullScreen && lenseTabVisible && !_wasLenseTabVisible) {
+    if (_prevWorkingCanvasReady && _prevWorkingCtx && state._workingCanvas && state._workingCtx) {
+      state._workingCtx.drawImage(_prevWorkingCanvas, 0, 0,
+        state._workingCanvas.width, state._workingCanvas.height);
+      // _workingCanvasReady stays true — restored content is valid native-app frame
+    } else {
+      // No clean backup yet (recording just started or very fast switch).
+      // Show blank rather than risk showing Lense UI.
+      state._workingCanvasReady = false;
+    }
+  }
+  _wasLenseTabVisible = lenseTabVisible;
+
+  if (state.isFullScreen && lenseTabVisible) {
+    oc.clearRect(0, 0, srcW, srcH);
+
+    if (state._workingCanvasReady && state._workingCanvas) {
+      if (isZoomed && state.zoomCurrentDraw) {
+        // zoomCurrentDraw is in srcW/srcH space; remap to _workingCanvas space.
+        let { sx, sy, sw, sh } = state.zoomCurrentDraw;
+        const wScaleX = state._workingCanvas.width  / srcW;
+        const wScaleY = state._workingCanvas.height / srcH;
+        sx *= wScaleX; sy *= wScaleY; sw *= wScaleX; sh *= wScaleY;
+        if (sw < state._workingCanvas.width * 0.99 || sh < state._workingCanvas.height * 0.99) {
+          oc.drawImage(state._workingCanvas, sx, sy, sw, sh, 0, 0, srcW, srcH);
+          if (state.zoomActive && !state.zoomAnimating) drawZoomBadge(oc);
+        } else {
+          oc.drawImage(state._workingCanvas, 0, 0, srcW, srcH);
+        }
+      } else {
+        oc.drawImage(state._workingCanvas, 0, 0, srcW, srcH);
+      }
+    }
+
+    if (state.useCam && state.camStream && camVideo.readyState >= 2) {
+      drawCamOnOffscreen(oc, srcW, srcH);
+    }
+
+    // Thumbnail — show frozen work frame for zoom selection.
+    // NOTE: previously this was skipped by an early return, leaving the
+    // thumbnail stale. Now it always updates.
+    if (state._workingCanvas && state._workingCanvasReady) {
+      thumbCtx.drawImage(state._workingCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+    }
+    drawThumbZoomRect(srcW, srcH);
+    return;
+  }
+
+  // ── BRANCH B: Work app is visible — sv shows real content ─────────────────
+  // sv is at srcW×srcH resolution; draw directly with no coordinate scaling.
+  oc.clearRect(0, 0, srcW, srcH);
+  if (isZoomed && state.zoomCurrentDraw) {
+    const { sx, sy, sw, sh } = state.zoomCurrentDraw;
     if (sw < srcW * 0.99 || sh < srcH * 0.99) {
       oc.drawImage(sv, sx, sy, sw, sh, 0, 0, srcW, srcH);
-
-      // Zoom badge — only when fully settled (not mid-animation)
-      if (state.zoomActive && !state.zoomAnimating) {
-        oc.save();
-        oc.fillStyle = "rgba(249,115,22,0.88)";
-        oc.roundRect(16, 16, 80, 30, 6);
-        oc.fill();
-        oc.fillStyle = "#fff";
-        oc.font = "bold 13px sans-serif";
-        oc.textBaseline = "middle";
-        oc.fillText("🔍 ZOOM", 30, 31);
-        oc.restore();
-      }
+      if (state.zoomActive && !state.zoomAnimating) drawZoomBadge(oc);
     } else {
       oc.drawImage(sv, 0, 0, srcW, srcH);
     }
   } else {
-    // Normal full-screen draw
     oc.drawImage(sv, 0, 0, srcW, srcH);
   }
 
-  // Webcam always drawn regardless of active tab
   if (state.useCam && state.camStream && camVideo.readyState >= 2) {
     drawCamOnOffscreen(oc, srcW, srcH);
   }
 
-  // ── Update working canvas (full-screen mode only) ────────────────────────
-  // While Lense tab is hidden: sv shows the actual working screen. Capture it
-  // continuously into _workingCanvas. The moment Lense tab becomes visible,
-  // sv starts showing Lense tab instead. By updating _workingCanvas ONLY while
-  // hidden, we guarantee it always contains working screen content, not Lense UI.
-  if (state.isFullScreen && state._workingCanvas && document.hidden) {
+  // Capture sv into the frozen work-frame buffer. This always runs in Branch B
+  // so there is no code path that can leave _workingCanvas un-populated when
+  // the user is in their work app.
+  if (state.isFullScreen && state._workingCanvas) {
+    // Save _workingCanvas to the backup BEFORE overwriting, throttled to once per 200ms.
+    // Throttling prevents lag frames (33ms apart) from overwriting _prevWorkingCanvas
+    // with Lense UI — the first lag frame's overwrite is blocked by the 200ms window,
+    // keeping _prevWorkingCanvas on the last clean native-app content.
+    if (state._workingCanvasReady && _prevWorkingCtx &&
+        Date.now() - _prevWorkingCanvasSaveTime > 200) {
+      _prevWorkingCtx.drawImage(state._workingCanvas, 0, 0,
+        _prevWorkingCanvas.width, _prevWorkingCanvas.height);
+      _prevWorkingCanvasReady    = true;
+      _prevWorkingCanvasSaveTime = Date.now();
+    }
     state._workingCtx.drawImage(sv,
       0, 0, state._workingCanvas.width, state._workingCanvas.height
     );
+    state._workingCanvasReady = true;
   }
 
-  // ── Update thumbnail (visible in Lense tab for zoom selection) ────────────
-  if (state.isFullScreen && state._workingCanvas) {
-    // Full-screen mode: always use frozen working canvas — never live sv
-    // (sv shows Lense tab when visible, causing recursion)
-    thumbCtx.drawImage(state._workingCanvas,
-      0, 0, thumbCanvas.width, thumbCanvas.height
-    );
+  // Thumbnail
+  if (state.isFullScreen && state._workingCanvas && state._workingCanvasReady) {
+    thumbCtx.drawImage(state._workingCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
   } else {
-    // Window/tab mode: sv always shows the target content — draw directly
     thumbCtx.drawImage(sv, 0, 0, thumbCanvas.width, thumbCanvas.height);
   }
+  drawThumbZoomRect(srcW, srcH);
+}
 
-  // Draw webcam pip on thumbnail too so user sees the full composition
-  if (state.useCam && state.camStream && camVideo.readyState >= 2) {
-    const pipSize = Math.round(thumbCanvas.width * 0.14);
-    const margin  = Math.round(thumbCanvas.width * 0.02);
-    const pipW = state.camShape === "circle" ? pipSize : Math.round(pipSize * 1.4);
-    const pipH = pipSize;
-    const px   = state.camX !== null
-      ? state.camX * (thumbCanvas.width  / srcW)
-      : thumbCanvas.width  - pipW - margin;
-    const py   = state.camY !== null
-      ? state.camY * (thumbCanvas.height / srcH)
-      : thumbCanvas.height - pipH - margin;
+// Draw the orange ZOOM badge onto the offscreen recording canvas.
+// Called only when zoom is fully settled (not mid-animation).
+function drawZoomBadge(oc) {
+  oc.save();
+  oc.fillStyle = "rgba(249,115,22,0.88)";
+  oc.roundRect(16, 16, 80, 30, 6);
+  oc.fill();
+  oc.fillStyle = "#fff";
+  oc.font = "bold 13px sans-serif";
+  oc.textBaseline = "middle";
+  oc.fillText("🔍 ZOOM", 30, 31);
+  oc.restore();
+}
 
-    thumbCtx.save();
-    if (state.camShape === "circle") {
-      thumbCtx.beginPath();
-      thumbCtx.arc(px + pipSize/2, py + pipSize/2, pipSize/2, 0, Math.PI * 2);
-      thumbCtx.clip();
-    } else {
-      thumbCtx.beginPath();
-      thumbCtx.roundRect(px, py, pipW, pipH, 6);
-      thumbCtx.clip();
-    }
-    thumbCtx.drawImage(camVideo, px, py, pipW, pipH);
-    thumbCtx.restore();
-  }
-
-  // Draw active zoom rect outline on thumbnail so user sees current zoom region
-  if (state.zoomActive && state.zoomRect) {
-    const scaleX = thumbCanvas.width  / srcW;
-    const scaleY = thumbCanvas.height / srcH;
-    const { x, y, w, h } = state.zoomRect;
-    thumbCtx.save();
-    thumbCtx.strokeStyle = "rgba(249,115,22,0.9)";
-    thumbCtx.lineWidth   = 2;
-    thumbCtx.setLineDash([4, 3]);
-    thumbCtx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
-    thumbCtx.restore();
-  }
+// Draw the active zoom selection outline onto the thumbnail canvas.
+function drawThumbZoomRect(srcW, srcH) {
+  if (!state.zoomActive || !state.zoomRect) return;
+  const scaleX = thumbCanvas.width  / srcW;
+  const scaleY = thumbCanvas.height / srcH;
+  const { x, y, w, h } = state.zoomRect;
+  thumbCtx.save();
+  thumbCtx.strokeStyle = "rgba(249,115,22,0.9)";
+  thumbCtx.lineWidth   = 2;
+  thumbCtx.setLineDash([4, 3]);
+  thumbCtx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+  thumbCtx.restore();
 }
 
 // Draw webcam onto offscreen canvas at a fixed corner position
@@ -939,6 +1030,12 @@ function cleanupStreams() {
   if (state._workingCtx && state._workingCanvas) {
     state._workingCtx.clearRect(0, 0, state._workingCanvas.width, state._workingCanvas.height);
   }
+  if (_prevWorkingCtx && _prevWorkingCanvas) {
+    _prevWorkingCtx.clearRect(0, 0, _prevWorkingCanvas.width, _prevWorkingCanvas.height);
+  }
+  _prevWorkingCanvasReady    = false;
+  _prevWorkingCanvasSaveTime = 0;
+  _wasLenseTabVisible        = false;
   recDot.classList.add("hidden");
   recTimer.textContent = "00:00";
 }
@@ -1154,7 +1251,8 @@ function buildZoomList(dur) {
     `;
     item.querySelector(".rv-zi-seek").addEventListener("click", e => {
       const rv = $("rv-video");
-      rv.currentTime = parseFloat(e.target.dataset.t);
+      const t = parseFloat(e.target.dataset.t);
+      if (!isNaN(t) && t >= 0) rv.currentTime = t;
       rv.play();
     });
     list.appendChild(item);
@@ -1171,10 +1269,16 @@ const SETTINGS_KEY = "lense_zoom_settings";
 (function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-    if (!saved) return;
-    if (saved.ZOOM_FACTOR    !== undefined) CONFIG.ZOOM_FACTOR    = saved.ZOOM_FACTOR;
-    if (saved.ZOOM_DURATION_MS !== undefined) CONFIG.ZOOM_DURATION_MS = saved.ZOOM_DURATION_MS;
-    if (saved.ZOOM_EASING    !== undefined) CONFIG.ZOOM_EASING    = saved.ZOOM_EASING;
+    if (!saved || typeof saved !== "object") return;
+    const EASING_VALUES = ["linear", "ease-in", "ease-out", "ease-in-out"];
+    if (typeof saved.ZOOM_FACTOR === "number" &&
+        saved.ZOOM_FACTOR >= 0.05 && saved.ZOOM_FACTOR <= 1.0)
+      CONFIG.ZOOM_FACTOR = saved.ZOOM_FACTOR;
+    if (typeof saved.ZOOM_DURATION_MS === "number" &&
+        saved.ZOOM_DURATION_MS >= 200 && saved.ZOOM_DURATION_MS <= 1000)
+      CONFIG.ZOOM_DURATION_MS = saved.ZOOM_DURATION_MS;
+    if (EASING_VALUES.includes(saved.ZOOM_EASING))
+      CONFIG.ZOOM_EASING = saved.ZOOM_EASING;
   } catch {}
 })();
 
