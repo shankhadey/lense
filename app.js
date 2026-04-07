@@ -84,6 +84,15 @@ const state = {
   zoomEvents:     [],   // { t: ms, type: "in"|"out" }
   durationMs:     0,
 
+  // AI post-production state
+  recordingBlob:   null,   // Blob of the recording for AI processing
+  transcript:      null,   // { text, chunks } from Whisper
+  aiSuggestions:   [],     // suggestion objects from suggestElements()
+  ttsAudio:           null,   // { audioBuffer, sampleRate } from Kokoro
+  useAIAudio:         false,  // true = use ttsAudio in export, false = use original mic
+  rerenderedBlob:     null,   // final exported Blob with all AI elements baked in
+  rerenderedBlobUrl:  null,   // object URL for rerenderedBlob — tracked for revocation
+
   // Full-screen recording detection
   isFullScreen:   false,
 
@@ -1017,6 +1026,7 @@ function saveVideo() {
   const mimeType = state.mediaRecorder.mimeType;
   const ext  = mimeType.includes("mp4") ? "mp4" : "webm";
   const blob = new Blob(state.chunks, { type: mimeType });
+  state.recordingBlob = blob;   // store for AI processing
   const url  = URL.createObjectURL(blob);
   cleanupStreams();
   showReviewPanel(url, mimeType, ext);
@@ -1056,6 +1066,10 @@ function cleanupStreams() {
 }
 
 function showLanding() {
+  if (_ttsAudioContext && _ttsAudioContext.state !== 'closed') _ttsAudioContext.close();
+  _ttsAudioContext = null;
+  _ttsSourceNode   = null;
+
   recorderEl.classList.add("hidden");
   $("review-panel").classList.add("hidden");
   landing.classList.remove("hidden");
@@ -1197,8 +1211,23 @@ function showReviewPanel(videoUrl, mimeType, ext) {
   $("rv-btn-download-webm").onclick = () => downloadVideo(videoUrl, ext);
   $("rv-btn-new").onclick = () => {
     URL.revokeObjectURL(videoUrl);
+    if (state.rerenderedBlobUrl) {
+      URL.revokeObjectURL(state.rerenderedBlobUrl);
+      state.rerenderedBlobUrl = null;
+    }
     showLanding();
   };
+
+  // Reset AI state for this recording
+  state.transcript        = null;
+  state.aiSuggestions     = [];
+  state.ttsAudio          = null;
+  state.useAIAudio        = false;
+  state.rerenderedBlob    = null;
+  state.rerenderedBlobUrl = null;
+
+  initReviewTabs();
+  initAIPanel(dur);
 }
 
 function buildTimeline(dur) {
@@ -1591,3 +1620,667 @@ function stopPreviewLoop() {
 
 // Sync settings UI on page load (in case saved settings differ from config defaults)
 syncSettingsUI();
+
+// ─── AI Settings panel ────────────────────────────────────────────────────────
+
+const aiSettingsPanel = $("ai-settings-panel");
+const btnAISettings   = $("btn-ai-settings");
+
+btnAISettings.addEventListener("click", () => {
+  const isHidden = aiSettingsPanel.classList.contains("hidden");
+  aiSettingsPanel.classList.toggle("hidden", !isHidden);
+  const arrow = $("ai-settings-arrow");
+  if (arrow) arrow.textContent = isHidden ? "▾" : "▸";
+  if (isHidden) syncAISettingsUI();
+});
+
+const AI_FEATURE_TOGGLE_MAP = {
+  'ai-toggle-transcription': 'AI_FEATURE_TRANSCRIPTION',
+  'ai-toggle-refinement':    'AI_FEATURE_REFINEMENT',
+  'ai-toggle-tts':           'AI_FEATURE_TTS',
+  'ai-toggle-zoom':          'AI_FEATURE_ZOOM',
+  'ai-toggle-spotlight':     'AI_FEATURE_SPOTLIGHT',
+  'ai-toggle-callout':       'AI_FEATURE_CALLOUT',
+};
+
+function syncAISettingsUI() {
+  Object.entries(AI_FEATURE_TOGGLE_MAP).forEach(([id, key]) => {
+    const el = $(id);
+    if (el) el.checked = CONFIG[key];
+  });
+
+  // Autonomy buttons
+  document.querySelectorAll('.ai-auto-btn').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.level) === CONFIG.AI_AUTONOMY);
+  });
+
+  // Duration sliders
+  const zDur = $('ai-zoom-dur');
+  if (zDur) { zDur.value = CONFIG.AI_ZOOM_DURATION_MS; $('ai-zoom-dur-val').textContent = (CONFIG.AI_ZOOM_DURATION_MS / 1000).toFixed(1) + 's'; }
+  const sDur = $('ai-spotlight-dur');
+  if (sDur) { sDur.value = CONFIG.AI_SPOTLIGHT_DURATION_MS; $('ai-spotlight-dur-val').textContent = (CONFIG.AI_SPOTLIGHT_DURATION_MS / 1000).toFixed(1) + 's'; }
+  const cDur = $('ai-callout-dur');
+  if (cDur) { cDur.value = CONFIG.AI_CALLOUT_DURATION_MS; $('ai-callout-dur-val').textContent = (CONFIG.AI_CALLOUT_DURATION_MS / 1000).toFixed(1) + 's'; }
+}
+
+// Wire AI feature toggles
+Object.entries(AI_FEATURE_TOGGLE_MAP).forEach(([id, key]) => {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener('change', () => saveConfig(key, el.checked));
+});
+
+// Wire autonomy buttons
+document.querySelectorAll('.ai-auto-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const level = Number(btn.dataset.level);
+    saveConfig('AI_AUTONOMY', level);
+    document.querySelectorAll('.ai-auto-btn').forEach(b =>
+      b.classList.toggle('active', Number(b.dataset.level) === level)
+    );
+  });
+});
+
+// Wire duration sliders
+$('ai-zoom-dur').addEventListener('input', e => {
+  const v = parseInt(e.target.value);
+  saveConfig('AI_ZOOM_DURATION_MS', v);
+  $('ai-zoom-dur-val').textContent = (v / 1000).toFixed(1) + 's';
+});
+$('ai-spotlight-dur').addEventListener('input', e => {
+  const v = parseInt(e.target.value);
+  saveConfig('AI_SPOTLIGHT_DURATION_MS', v);
+  $('ai-spotlight-dur-val').textContent = (v / 1000).toFixed(1) + 's';
+});
+$('ai-callout-dur').addEventListener('input', e => {
+  const v = parseInt(e.target.value);
+  saveConfig('AI_CALLOUT_DURATION_MS', v);
+  $('ai-callout-dur-val').textContent = (v / 1000).toFixed(1) + 's';
+});
+
+// Sync AI settings when modal opens
+$("nav-start-btn").addEventListener("click", syncAISettingsUI);
+$("hero-start-btn").addEventListener("click", syncAISettingsUI);
+
+// Close AI panel when modal closes
+btnCancel.addEventListener("click", () => {
+  aiSettingsPanel.classList.add("hidden");
+  const arrow = $("ai-settings-arrow");
+  if (arrow) arrow.textContent = "▸";
+}, true); // capture before the existing cancel handler
+
+// ─── Review panel tabs ────────────────────────────────────────────────────────
+
+function initReviewTabs() {
+  document.querySelectorAll('.rv-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+  });
+  // Start on Moments tab
+  switchTab('moments');
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.rv-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === name)
+  );
+  document.querySelectorAll('.rv-tab-panel').forEach(p => {
+    const active = p.id === 'tab-' + name;
+    p.classList.toggle('active', active);
+    p.classList.toggle('hidden', !active);
+  });
+}
+
+// ─── Toast notifications ──────────────────────────────────────────────────────
+
+function showToast(msg, duration = 3000) {
+  let toast = $('ai-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'ai-toast';
+    toast.className = 'ai-toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.add('visible');
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => toast.classList.remove('visible'), duration);
+}
+
+// ─── AI panel: transcription + suggestions pipeline ──────────────────────────
+
+function initAIPanel(durMs) {
+  // Show/hide TTS section based on feature flag
+  const ttsSection = $('ai-tts-section');
+  if (ttsSection) ttsSection.classList.toggle('hidden', !CONFIG.AI_FEATURE_TTS);
+
+  // Show export section
+  const exportSection = $('ai-export-section');
+  if (exportSection) exportSection.classList.remove('hidden');
+
+  // Set up "Transcribe now" button
+  const btnTranscribe = $('btn-transcribe');
+  if (btnTranscribe) {
+    btnTranscribe.addEventListener('click', () => runTranscription(), { once: true });
+  }
+
+  // Set up "Refine" button
+  const btnRefine = $('btn-refine');
+  if (btnRefine) {
+    btnRefine.addEventListener('click', () => runRefinement());
+  }
+
+  // Set up TTS
+  $('btn-gen-tts')?.addEventListener('click', () => runTTS());
+  $('btn-tts-play')?.addEventListener('click', () => previewTTSAudio());
+  $('btn-tts-use')?.addEventListener('click', () => {
+    state.useAIAudio = true;
+    showToast('AI voiceover selected for export');
+  });
+  $('btn-tts-discard')?.addEventListener('click', () => {
+    state.useAIAudio = false;
+    showToast('Original audio selected for export');
+  });
+
+  // Set up Export with AI
+  $('btn-export-ai')?.addEventListener('click', () => runRerender());
+
+  // Accept-all / show-dismissed
+  $('btn-accept-all-ai')?.addEventListener('click', acceptAllSuggestions);
+
+  // Auto-start based on autonomy level
+  const startAct = canAct('transcribe', 'start');
+  if (startAct === 'auto' && CONFIG.AI_FEATURE_TRANSCRIPTION) {
+    // Small delay so review panel is fully visible first
+    setTimeout(() => runTranscription(), 500);
+  } else if (startAct === 'ask' && CONFIG.AI_FEATURE_TRANSCRIPTION) {
+    // Show the "Transcribe now" prompt (already visible in idle state)
+  }
+  // If transcription is off but suggestions are on, still run frame analysis
+  if (!CONFIG.AI_FEATURE_TRANSCRIPTION && (CONFIG.AI_FEATURE_ZOOM || CONFIG.AI_FEATURE_SPOTLIGHT || CONFIG.AI_FEATURE_CALLOUT)) {
+    setTimeout(() => runSuggestionsOnly(), 500);
+  }
+}
+
+// ─── Transcription ────────────────────────────────────────────────────────────
+
+async function runTranscription() {
+  if (!state.recordingBlob) return;
+
+  // Switch to Transcript tab so user can watch progress
+  switchTab('transcript');
+
+  const idleEl    = $('transcript-idle');
+  const runningEl = $('transcript-running');
+  const progressEl = $('transcript-progress');
+  const labelEl   = $('transcript-progress-label');
+
+  idleEl?.classList.add('hidden');
+  runningEl?.classList.remove('hidden');
+
+  try {
+    state.transcript = await transcribeAudio(state.recordingBlob, p => {
+      if (progressEl) progressEl.style.width = Math.round(p * 100) + '%';
+      if (labelEl) labelEl.textContent = p < 0.2 ? 'Extracting audio…' :
+        p < 0.8 ? 'Transcribing…' : 'Almost done…';
+    });
+  } catch (err) {
+    runningEl?.classList.add('hidden');
+    idleEl?.classList.remove('hidden');
+    showToast('Transcription failed: ' + err.message, 5000);
+    return;
+  }
+
+  runningEl?.classList.add('hidden');
+
+  if (state.transcript && state.transcript.chunks.length > 0) {
+    renderTranscriptWords();
+    showToast('Transcript ready');
+
+    // Auto-run suggestions now that we have a transcript
+    runSuggestions();
+
+    // L2/L3: auto-run refinement too
+    const refineAct = canAct('refine', 'start');
+    if (refineAct === 'auto' && CONFIG.AI_FEATURE_REFINEMENT) {
+      setTimeout(() => runRefinement(), 200);
+    }
+  } else {
+    if (labelEl) labelEl.textContent = 'No speech detected';
+    runningEl?.classList.remove('hidden');
+    // Still run frame-diff suggestions without transcript
+    runSuggestionsOnly();
+  }
+}
+
+function renderTranscriptWords() {
+  const container = $('transcript-words');
+  if (!container || !state.transcript) return;
+  container.classList.remove('hidden');
+  container.innerHTML = '';
+
+  const rv = $('rv-video');
+  state.transcript.chunks.forEach(chunk => {
+    const span = document.createElement('span');
+    span.className = 'transcript-word';
+    span.textContent = chunk.text;
+    span.dataset.start = chunk.timestamp[0];
+    span.dataset.end   = chunk.timestamp[1] || chunk.timestamp[0];
+    span.addEventListener('click', () => {
+      if (rv) rv.currentTime = parseFloat(span.dataset.start);
+    });
+    container.appendChild(span);
+  });
+
+  // Show refine section
+  const refineSection = $('transcript-refine');
+  if (refineSection) refineSection.classList.remove('hidden');
+
+  // Playhead sync: highlight current word.
+  // Store the handler on the element so repeated calls replace it, not stack it.
+  if (rv) {
+    if (rv._transcriptTimeUpdate) rv.removeEventListener('timeupdate', rv._transcriptTimeUpdate);
+    rv._transcriptTimeUpdate = () => {
+      const t = rv.currentTime;
+      container.querySelectorAll('.transcript-word').forEach(span => {
+        const start = parseFloat(span.dataset.start);
+        const end   = parseFloat(span.dataset.end);
+        span.classList.toggle('active', t >= start && t <= end + 0.1);
+      });
+    };
+    rv.addEventListener('timeupdate', rv._transcriptTimeUpdate);
+  }
+}
+
+// ─── Script refinement ────────────────────────────────────────────────────────
+
+async function runRefinement() {
+  if (!state.transcript?.text) {
+    showToast('No transcript to refine');
+    return;
+  }
+
+  const btnRefine  = $('btn-refine');
+  const scriptArea = $('transcript-script');
+  const acceptBtn  = $('btn-refine-accept');
+  const revertBtn  = $('btn-refine-revert');
+
+  if (btnRefine) { btnRefine.disabled = true; btnRefine.textContent = 'Refining…'; }
+
+  try {
+    const result = await refineScript(state.transcript.text, p => {});
+    if (scriptArea) {
+      scriptArea.value    = result.refined;
+      scriptArea.readOnly = false;
+    }
+
+    // L3: auto-accept if word diff is low
+    if (CONFIG.AI_AUTONOMY === 3 && result.diffRatio <= CONFIG.AI_L3_REFINEMENT_MAX_DIFF) {
+      state.transcript.text = result.refined;
+      if (scriptArea) scriptArea.readOnly = true;
+      showToast(`Script refined (${result.method}, auto-accepted)`);
+    } else {
+      // Show accept button
+      if (acceptBtn) acceptBtn.style.display = '';
+      if (revertBtn) revertBtn.classList.remove('hidden');
+      showToast('Refinement ready — review and accept');
+      switchTab('transcript');
+    }
+
+    if (acceptBtn) {
+      acceptBtn.onclick = () => {
+        state.transcript.text = scriptArea?.value || state.transcript.text;
+        if (acceptBtn) acceptBtn.style.display = 'none';
+        if (revertBtn) revertBtn.classList.add('hidden');
+        showToast('Refined script accepted');
+      };
+    }
+    if (revertBtn) {
+      revertBtn.onclick = () => {
+        if (scriptArea) scriptArea.value = state.transcript.text;
+        if (acceptBtn) acceptBtn.style.display = 'none';
+        if (revertBtn) revertBtn.classList.add('hidden');
+      };
+    }
+  } catch (err) {
+    showToast('Refinement failed: ' + err.message, 5000);
+  } finally {
+    if (btnRefine) { btnRefine.disabled = false; btnRefine.textContent = 'Refine with AI'; }
+  }
+}
+
+// ─── AI suggestions ───────────────────────────────────────────────────────────
+
+async function runSuggestions() {
+  if (!state.recordingBlob) return;
+  await _runSuggestionsInternal(state.transcript || { text: '', chunks: [] });
+}
+
+async function runSuggestionsOnly() {
+  if (!state.recordingBlob) return;
+  await _runSuggestionsInternal({ text: '', chunks: [] });
+}
+
+async function _runSuggestionsInternal(transcript) {
+  const idleEl  = $('ai-analysis-idle');
+  const runEl   = $('ai-analysis-running');
+  const progEl  = $('ai-analysis-progress');
+  const labelEl = $('ai-analysis-label');
+
+  idleEl?.classList.add('hidden');
+  runEl?.classList.remove('hidden');
+  if (labelEl) labelEl.textContent = 'Analysing video…';
+
+  try {
+    const suggestions = await suggestElements(
+      state.recordingBlob,
+      transcript,
+      p => {
+        if (progEl) progEl.style.width = Math.round(p * 100) + '%';
+        if (labelEl) labelEl.textContent = p < 0.7 ? 'Analysing frames…' : 'Finding moments…';
+      }
+    );
+
+    state.aiSuggestions = suggestions;
+
+    // Apply autonomy: auto-accept high-confidence suggestions
+    suggestions.forEach(s => {
+      const act = canAct('suggestions', 'commit', s.confidence);
+      if (act === 'auto') {
+        s.active = s.recommended;
+        applySuggestion(s, false);
+      }
+    });
+
+    renderSuggestions();
+
+    const count = suggestions.filter(s => !s.dismissed).length;
+    if (count) {
+      const badge = $('ai-tab-badge');
+      if (badge) { badge.textContent = count; badge.classList.remove('hidden'); }
+      showToast(`${count} AI suggestion${count > 1 ? 's' : ''} ready`);
+
+      const bulkActions = $('ai-bulk-actions');
+      if (bulkActions) bulkActions.classList.remove('hidden');
+    }
+
+    // Render AI markers on timeline
+    renderAIMarkers(
+      $('rv-timeline-track'),
+      state.durationMs,
+      state.aiSuggestions
+    );
+
+  } catch (err) {
+    if (labelEl) labelEl.textContent = 'Analysis failed';
+    showToast('Suggestion analysis failed: ' + err.message, 5000);
+  } finally {
+    runEl?.classList.add('hidden');
+    idleEl?.classList.remove('hidden');
+  }
+}
+
+function renderSuggestions() {
+  renderSuggestionCards($('ai-suggestion-list'), state.aiSuggestions, {
+    onAccept:    (s, applyAll) => { applySuggestion(s, applyAll); renderSuggestions(); refreshAITimeline(); },
+    onDismiss:   (s) => { s.dismissed = true; renderSuggestions(); refreshAITimeline(); },
+    onRemove:    (s) => { state.aiSuggestions = state.aiSuggestions.filter(x => x._id !== s._id); renderSuggestions(); refreshAITimeline(); },
+    onLabelEdit: () => {},
+  });
+}
+
+// skipRebuild lets acceptAllSuggestions batch the timeline rebuild.
+function applySuggestion(s, applyAll, skipRebuild = false) {
+  const newEls = suggestionToElements(s, applyAll);
+  newEls.forEach(el => elements.add(el));
+
+  newEls.filter(e => e.type === 'zoom').forEach(el => {
+    state.zoomEvents.push({ t: el.t,              type: 'in',  source: 'ai' });
+    state.zoomEvents.push({ t: el.t + el.duration, type: 'out', source: 'ai' });
+  });
+
+  if (!skipRebuild) buildTimeline(state.durationMs);
+  s.accepted = true;
+}
+
+function acceptAllSuggestions() {
+  state.aiSuggestions.filter(s => !s.dismissed).forEach(s => {
+    if (!s.accepted) {
+      if (!s.active) s.active = s.recommended;
+      applySuggestion(s, false, true);
+    }
+  });
+  buildTimeline(state.durationMs);
+  renderSuggestions();
+  refreshAITimeline();
+  showToast('All suggestions applied');
+}
+
+function refreshAITimeline() {
+  renderAIMarkers($('rv-timeline-track'), state.durationMs, state.aiSuggestions);
+}
+
+// ─── TTS ──────────────────────────────────────────────────────────────────────
+
+let _ttsAudioContext = null;
+let _ttsSourceNode   = null;
+
+async function runTTS() {
+  if (!state.transcript?.text) {
+    showToast('No transcript — run transcription first');
+    return;
+  }
+
+  const btn    = $('btn-gen-tts');
+  const voice  = $('ai-voice-select')?.value || 'af_heart';
+  const text   = state.transcript.text;
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+
+  try {
+    const result = await generateTTS(text, voice, p => {});
+    state.ttsAudio = result;
+
+    // L3: auto-select as export audio
+    if (CONFIG.AI_AUTONOMY === 3) {
+      state.useAIAudio = true;
+      showToast('Voiceover generated and selected for export');
+    } else {
+      showToast('Voiceover ready — preview and accept');
+      switchTab('ai');
+    }
+
+    $('ai-tts-preview')?.classList.remove('hidden');
+    renderWaveform(result.audioBuffer);
+  } catch (err) {
+    showToast('TTS failed: ' + err.message, 5000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Generate voiceover'; }
+  }
+}
+
+function previewTTSAudio() {
+  if (!state.ttsAudio) return;
+  if (_ttsSourceNode) { try { _ttsSourceNode.stop(); } catch {} }
+  if (!_ttsAudioContext || _ttsAudioContext.state === 'closed') {
+    _ttsAudioContext = new AudioContext();
+  }
+  _ttsSourceNode = _ttsAudioContext.createBufferSource();
+  _ttsSourceNode.buffer = state.ttsAudio.audioBuffer;
+  _ttsSourceNode.connect(_ttsAudioContext.destination);
+  _ttsSourceNode.start();
+}
+
+function renderWaveform(audioBuffer) {
+  const waveEl = $('ai-waveform');
+  if (!waveEl) return;
+  const data    = audioBuffer.getChannelData(0);
+  const samples = 80;
+  const step    = Math.floor(data.length / samples);
+  let bars      = '';
+  for (let i = 0; i < samples; i++) {
+    let max = 0;
+    for (let j = 0; j < step; j++) max = Math.max(max, Math.abs(data[i * step + j] || 0));
+    const h = Math.round(max * 40) + 2;
+    bars += `<span class="wf-bar" style="height:${h}px"></span>`;
+  }
+  waveEl.innerHTML = bars;
+}
+
+// ─── Re-render pipeline ───────────────────────────────────────────────────────
+
+async function runRerender() {
+  if (!state.recordingBlob) return;
+
+  const btn       = $('btn-export-ai');
+  const progWrap  = $('ai-export-progress-wrap');
+  const progFill  = $('ai-export-progress');
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
+  if (progWrap) progWrap.classList.remove('hidden');
+
+  try {
+    const blob = await rerenderVideo(state.recordingBlob, p => {
+      if (progFill) progFill.style.width = Math.round(p * 100) + '%';
+    });
+    state.rerenderedBlob    = blob;
+    const url = URL.createObjectURL(blob);
+    state.rerenderedBlobUrl = url;
+    const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+
+    // Update video player to show re-rendered version
+    const rv = $('rv-video');
+    if (rv) rv.src = url;
+
+    // Update download button to use re-rendered version
+    $('rv-btn-download-webm').onclick = () => downloadVideo(url, ext);
+
+    showToast('Export ready — download button updated');
+  } catch (err) {
+    showToast('Export failed: ' + err.message, 5000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Export with AI'; }
+    if (progWrap) progWrap.classList.add('hidden');
+  }
+}
+
+async function rerenderVideo(srcBlob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.src   = URL.createObjectURL(srcBlob);
+    video.muted = true;
+    video.preload = 'metadata';
+
+    video.addEventListener('loadedmetadata', async () => {
+      const W = video.videoWidth;
+      const H = video.videoHeight;
+      const duration = video.duration;
+
+      const canvas = document.createElement('canvas');
+      canvas.width  = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+
+      // Audio setup
+      const audioCtx = new AudioContext();
+      let audioSource;
+      if (state.useAIAudio && state.ttsAudio) {
+        audioSource = audioCtx.createBufferSource();
+        audioSource.buffer = state.ttsAudio.audioBuffer;
+      } else {
+        // decode original audio
+        try {
+          const ab = await srcBlob.arrayBuffer();
+          const decoded = await audioCtx.decodeAudioData(ab);
+          audioSource = audioCtx.createBufferSource();
+          audioSource.buffer = decoded;
+        } catch {
+          // no audio track — proceed without audio
+          audioSource = null;
+        }
+      }
+
+      const dest = audioCtx.createMediaStreamDestination();
+      if (audioSource) audioSource.connect(dest);
+
+      const canvasStream = canvas.captureStream(30);
+      if (audioSource) {
+        dest.stream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
+      }
+
+      const mimeType = getSupportedMimeType();
+      const recorder = new MediaRecorder(canvasStream, {
+        mimeType,
+        videoBitsPerSecond: 8_000_000,
+      });
+
+      const rerenderChunks = [];
+      recorder.ondataavailable = e => { if (e.data.size > 0) rerenderChunks.push(e.data); };
+      recorder.onstop = () => {
+        URL.revokeObjectURL(video.src);
+        audioCtx.close();
+        const finalBlob = new Blob(rerenderChunks, { type: mimeType });
+        resolve(finalBlob);
+      };
+
+      recorder.start(200);
+      if (audioSource) audioSource.start(0);
+      video.playbackRate = 4;
+
+      video.requestVideoFrameCallback(function renderLoop(now, meta) {
+        const tMs = meta.mediaTime * 1000;
+        ctx.clearRect(0, 0, W, H);
+
+        // Apply zoom if applicable (check state.zoomEvents pairs)
+        _applyReplayZoom(ctx, video, tMs, W, H);
+
+        // Apply elements (spotlights, callouts)
+        drawElements(ctx, W, H, tMs);
+
+        onProgress(Math.min(0.99, meta.mediaTime / duration));
+
+        if (!video.ended && video.readyState >= 2) {
+          video.requestVideoFrameCallback(renderLoop);
+        } else {
+          recorder.stop();
+        }
+      });
+
+      video.play().catch(reject);
+    });
+
+    video.addEventListener('error', reject);
+  });
+}
+
+/**
+ * Apply the recorded zoom state at time tMs when re-rendering.
+ * Reads state.zoomEvents to find active zoom intervals.
+ */
+function _applyReplayZoom(ctx, videoEl, tMs, W, H) {
+  // Find the last 'in' event before tMs with no 'out' between it and tMs
+  let activeZoom = null;
+  for (let i = state.zoomEvents.length - 1; i >= 0; i--) {
+    const ev = state.zoomEvents[i];
+    if (ev.t > tMs) continue;
+    if (ev.type === 'out') break;
+    if (ev.type === 'in') { activeZoom = ev; break; }
+  }
+
+  if (activeZoom && activeZoom.cx !== undefined) {
+    // AI zoom: cx/cy based
+    const el = elements.items.find(e => e.type === 'zoom' && Math.abs(e.t - activeZoom.t) < 100);
+    if (el) {
+      const sw = W * 0.5;
+      const sh = H * 0.5;
+      const sx = Math.max(0, Math.min(el.cx * W - sw / 2, W - sw));
+      const sy = Math.max(0, Math.min(el.cy * H - sh / 2, H - sh));
+      ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H);
+      return;
+    }
+  }
+  // Default: draw full frame
+  ctx.drawImage(videoEl, 0, 0, W, H);
+}
+
+// Initial sync of AI settings UI
+syncAISettingsUI();
