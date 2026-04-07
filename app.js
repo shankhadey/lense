@@ -1211,8 +1211,9 @@ function showReviewPanel(videoUrl, mimeType, ext) {
            tMs >= e.t && tMs <= e.t + e.duration
     );
     if (z) {
+      const scale = 1 / Math.min(1.0, Math.max(0.05, CONFIG.ZOOM_FACTOR));
       rv.style.transition    = 'transform 0.3s ease';
-      rv.style.transform     = 'scale(2)';
+      rv.style.transform     = `scale(${scale})`;
       rv.style.transformOrigin = `${z.cx * 100}% ${z.cy * 100}%`;
     } else {
       rv.style.transition    = 'transform 0.3s ease';
@@ -1256,22 +1257,22 @@ function buildTimeline(dur) {
   if (!dur) return;
 
   // Zoom bands
-  let zStart = null;
+  let zStart = null, zSource = null;
   state.zoomEvents.forEach(ev => {
-    if (ev.type === "in") { zStart = ev.t; }
+    if (ev.type === "in") { zStart = ev.t; zSource = ev.source; }
     if (ev.type === "out" && zStart !== null) {
       const band = document.createElement("div");
-      band.className = "rv-zoom-band";
+      band.className = "rv-zoom-band" + (zSource === 'ai' ? ' rv-zoom-band-ai' : '');
       band.style.left  = (zStart / dur * 100) + "%";
       band.style.width = ((ev.t - zStart) / dur * 100) + "%";
-      band.title = `Zoom: ${formatTime(zStart)} – ${formatTime(ev.t)}`;
+      band.title = `${zSource === 'ai' ? 'AI zoom' : 'Zoom'}: ${formatTime(zStart)} – ${formatTime(ev.t)}`;
       track.appendChild(band);
-      zStart = null;
+      zStart = null; zSource = null;
     }
   });
   if (zStart !== null) {
     const band = document.createElement("div");
-    band.className = "rv-zoom-band";
+    band.className = "rv-zoom-band" + (zSource === 'ai' ? ' rv-zoom-band-ai' : '');
     band.style.left  = (zStart / dur * 100) + "%";
     band.style.width = ((dur - zStart) / dur * 100) + "%";
     track.appendChild(band);
@@ -2058,23 +2059,48 @@ function renderSuggestions() {
     onAccept:    (s, applyAll) => { applySuggestion(s, applyAll); renderSuggestions(); refreshAITimeline(); },
     onDismiss:   (s) => { s.dismissed = true; renderSuggestions(); refreshAITimeline(); updateDismissedBtn(); },
     onRestore:   (s) => { s.dismissed = false; renderSuggestions(); refreshAITimeline(); updateDismissedBtn(); },
-    onRemove:    (s) => { state.aiSuggestions = state.aiSuggestions.filter(x => x._id !== s._id); renderSuggestions(); refreshAITimeline(); updateDismissedBtn(); },
+    onRemove:    (s) => {
+      if (s.accepted) unapplySuggestion(s);
+      state.aiSuggestions = state.aiSuggestions.filter(x => x._id !== s._id);
+      renderSuggestions(); refreshAITimeline(); updateDismissedBtn();
+    },
     onLabelEdit: () => {},
   }, _showDismissed);
+
+  // Update tab badge
+  const active = state.aiSuggestions.filter(s => !s.dismissed).length;
+  const badge = $('ai-tab-badge');
+  if (badge) { badge.textContent = active; badge.classList.toggle('hidden', active === 0); }
+
+  // Disable Accept All when nothing is left to accept
+  const acceptable = state.aiSuggestions.filter(s => !s.dismissed && !s.accepted).length;
+  const acceptAllBtn = $('btn-accept-all-ai');
+  if (acceptAllBtn) acceptAllBtn.disabled = acceptable === 0;
+
+  // Hide bulk actions row entirely when no suggestions remain
+  const bulkActions = $('ai-bulk-actions');
+  if (bulkActions) bulkActions.classList.toggle('hidden', state.aiSuggestions.length === 0);
 }
 
 // skipRebuild lets acceptAllSuggestions batch the timeline rebuild.
 function applySuggestion(s, applyAll, skipRebuild = false) {
   const newEls = suggestionToElements(s, applyAll);
-  newEls.forEach(el => elements.add(el));
+  newEls.forEach(el => { el.suggId = s._id; elements.add(el); });
 
   newEls.filter(e => e.type === 'zoom').forEach(el => {
-    state.zoomEvents.push({ t: el.t,              type: 'in',  source: 'ai', cx: el.cx, cy: el.cy });
-    state.zoomEvents.push({ t: el.t + el.duration, type: 'out', source: 'ai' });
+    state.zoomEvents.push({ t: el.t,              type: 'in',  source: 'ai', cx: el.cx, cy: el.cy, suggId: s._id });
+    state.zoomEvents.push({ t: el.t + el.duration, type: 'out', source: 'ai', suggId: s._id });
   });
 
   if (!skipRebuild) buildTimeline(state.durationMs);
   s.accepted = true;
+}
+
+function unapplySuggestion(s) {
+  elements.removeBySugg(s._id);
+  state.zoomEvents = state.zoomEvents.filter(e => e.suggId !== s._id);
+  buildTimeline(state.durationMs);
+  buildZoomList(state.durationMs);
 }
 
 function acceptAllSuggestions() {
@@ -2268,7 +2294,6 @@ async function rerenderVideo(srcBlob, onProgress) {
 
       recorder.start(200);
       if (audioSource) audioSource.start(0);
-      video.playbackRate = 4;
 
       // Must be in DOM for requestVideoFrameCallback to fire (compositor requires it)
       video.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px';
@@ -2315,11 +2340,12 @@ function _applyReplayZoom(ctx, videoEl, tMs, W, H) {
   }
 
   if (activeZoom && activeZoom.cx !== undefined) {
-    // AI zoom: cx/cy based
+    // AI zoom: cx/cy based — honour user's ZOOM_FACTOR setting
     const el = elements.items.find(e => e.type === 'zoom' && Math.abs(e.t - activeZoom.t) < 100);
     if (el) {
-      const sw = W * 0.5;
-      const sh = H * 0.5;
+      const zf = Math.min(1.0, Math.max(0.05, CONFIG.ZOOM_FACTOR));
+      const sw = W * zf;
+      const sh = H * zf;
       const sx = Math.max(0, Math.min(el.cx * W - sw / 2, W - sw));
       const sy = Math.max(0, Math.min(el.cy * H - sh / 2, H - sh));
       ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H);

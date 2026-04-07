@@ -15,6 +15,7 @@ const elements = {
   items: [],      // accepted/active elements
   add(el) { this.items.push(el); },
   remove(id) { this.items = this.items.filter(e => e._id !== id); },
+  removeBySugg(suggId) { this.items = this.items.filter(e => e.suggId !== suggId); },
   clear() { this.items = []; },
   atTime(tMs) {
     return this.items.filter(e => tMs >= e.t && tMs <= e.t + e.duration);
