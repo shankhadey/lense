@@ -147,8 +147,12 @@ async function transcribeAudio(recordingBlob, onProgress = () => {}) {
 
   onProgress(0.80);
 
-  // 3. Run inference
-  const result = await _whisperPipeline(pcm, { return_timestamps: 'word' });
+  // 3. Run inference — chunking options must be passed here (not only at pipeline build time)
+  const result = await _whisperPipeline(pcm, {
+    return_timestamps: 'word',
+    chunk_length_s: 30,
+    stride_length_s: 5,
+  });
   onProgress(1.0);
 
   return {
@@ -284,29 +288,40 @@ async function extractFrames(videoBlob, onProgress = () => {}) {
     video.muted = true;
     video.preload = 'metadata';
 
+    // willReadFrequently: tell the browser we'll call getImageData every frame
+    // so it keeps the canvas on CPU rather than GPU (avoids expensive readback stalls).
     const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
+    const ctx    = canvas.getContext('2d', { willReadFrequently: true });
     const activity = [];
-    let prevData = null;  // only one frame's raw bytes held at a time
+    let prevData = null;
+
+    video.addEventListener('error', reject);
 
     video.addEventListener('loadedmetadata', () => {
       canvas.width  = Math.min(320, video.videoWidth);
       canvas.height = Math.round(canvas.width * video.videoHeight / video.videoWidth);
-      const W = canvas.width, H = canvas.height;
-      const duration = video.duration;
-      const total = Math.ceil(duration);
+
+      if (!isFinite(video.duration)) {
+        // MediaRecorder webm has no duration atom written — browser reports Infinity.
+        // Seeking past the end snaps video.currentTime to the actual last frame,
+        // revealing the true duration without downloading anything extra.
+        video.addEventListener('seeked', function probe() {
+          video.removeEventListener('seeked', probe);
+          beginScan(video.currentTime);
+        });
+        video.currentTime = 1e9;
+      } else {
+        beginScan(video.duration);
+      }
+    });
+
+    function beginScan(duration) {
+      const W     = canvas.width;
+      const H     = canvas.height;
+      const total = Math.max(1, Math.ceil(duration));
       let t = 0;
 
-      const seekNext = () => {
-        if (t > duration) {
-          URL.revokeObjectURL(video.src);
-          resolve(activity);
-          return;
-        }
-        video.currentTime = t;
-      };
-
-      video.addEventListener('seeked', () => {
+      function onSeeked() {
         ctx.drawImage(video, 0, 0, W, H);
         const currData = ctx.getImageData(0, 0, W, H).data;
 
@@ -316,18 +331,26 @@ async function extractFrames(videoBlob, onProgress = () => {}) {
           activity.push({ t, ...pixelDiff(prevData, currData, W, H) });
         }
 
-        prevData = new Uint8ClampedArray(currData); // copy; ctx buffer reused each seek
+        prevData = new Uint8ClampedArray(currData); // copy; ctx buffer is reused each seek
         onProgress(t / total);
         t += 1;
-        // Defer to next macrotask — setting currentTime synchronously inside a
-        // 'seeked' handler can silently swallow the next seeked event on Chrome.
-        setTimeout(seekNext, 0);
-      });
 
-      seekNext();
-    });
+        if (t > duration) {
+          video.removeEventListener('seeked', onSeeked);
+          URL.revokeObjectURL(video.src);
+          resolve(activity);
+        } else {
+          // Defer to next macrotask — setting currentTime synchronously inside a
+          // 'seeked' handler can silently swallow the next seeked event on Chrome.
+          setTimeout(() => { video.currentTime = t; }, 0);
+        }
+      }
 
-    video.addEventListener('error', reject);
+      video.addEventListener('seeked', onSeeked);
+      // Defer the very first seek too, for consistency (we may be called from
+      // within a seeked handler when probing duration above).
+      setTimeout(() => { video.currentTime = 0; }, 0);
+    }
   });
 }
 

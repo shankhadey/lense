@@ -6,6 +6,17 @@
   <title id="page-title">Lense — Record. Zoom. Share.</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="stylesheet" href="style.css" />
+  <!--
+    Import map — resolves bare specifiers used by kokoro-js's internal ESM imports.
+    Must appear before any <script> tag that triggers dynamic import().
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "@huggingface/transformers": "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js"
+    }
+  }
+  </script>
 </head>
 <body>
 
