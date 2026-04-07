@@ -136,6 +136,7 @@ async function transcribeAudio(recordingBlob, onProgress = () => {}) {
       'automatic-speech-recognition',
       'Xenova/whisper-base.en',
       {
+        dtype: 'q8',
         chunk_length_s: 30,
         stride_length_s: 5,
         return_timestamps: 'word',
@@ -255,10 +256,16 @@ const TRIGGERS = {
   },
 };
 
-// Base intensity thresholds (applied to raw pixel diff intensity × phrase multiplier)
+// Base score thresholds (raw intensity × phrase multiplier must exceed these)
 const ZOOM_THRESHOLD      = 0.12;
 const CALLOUT_THRESHOLD   = 0.18;
 const SPOTLIGHT_THRESHOLD = 0.20;
+
+// Minimum raw intensity for text-triggered callout/spotlight.
+// Cursor movement on a full-screen recording produces intensity ~0.005–0.01
+// (cursor is a tiny fraction of total pixels); this floor lets an explicit
+// phrase like "notice this" override the high combined-score threshold.
+const PHRASE_TRIGGER_FLOOR = 0.005;
 
 /**
  * Extract 1 frame per second from a video Blob.
@@ -312,7 +319,9 @@ async function extractFrames(videoBlob, onProgress = () => {}) {
         prevData = new Uint8ClampedArray(currData); // copy; ctx buffer reused each seek
         onProgress(t / total);
         t += 1;
-        seekNext();
+        // Defer to next macrotask — setting currentTime synchronously inside a
+        // 'seeked' handler can silently swallow the next seeked event on Chrome.
+        setTimeout(seekNext, 0);
       });
 
       seekNext();
@@ -423,13 +432,18 @@ async function suggestElements(videoBlob, transcript, onProgress = () => {}) {
     const best = group.slice().sort((a, b) => b.score - a.score)[0];
     if (best.t - lastT < 3) return;
 
-    // Determine which types this moment qualifies for (respect feature toggles)
+    // Determine which types this moment qualifies for (respect feature toggles).
+    // Callout/spotlight: combined score OR explicit phrase + any perceptible activity
+    // (cursor movement on a full-screen recording has very low intensity, but the
+    // user explicitly called it out verbally — honour the phrase over the score).
     const qualified = [];
     if (zoomOn && best.score >= ZOOM_THRESHOLD)
       qualified.push({ type: 'zoom', score: best.score });
-    if (calloutOn && best.score >= CALLOUT_THRESHOLD && best.suggestedType === 'callout')
+    if (calloutOn && best.suggestedType === 'callout' &&
+        (best.score >= CALLOUT_THRESHOLD || best.intensity >= PHRASE_TRIGGER_FLOOR))
       qualified.push({ type: 'callout', score: best.score });
-    if (spotlightOn && best.score >= SPOTLIGHT_THRESHOLD && best.suggestedType === 'spotlight')
+    if (spotlightOn && best.suggestedType === 'spotlight' &&
+        (best.score >= SPOTLIGHT_THRESHOLD || best.intensity >= PHRASE_TRIGGER_FLOOR))
       qualified.push({ type: 'spotlight', score: best.score });
 
     if (!qualified.length) return;
@@ -506,11 +520,13 @@ async function generateTTS(text, voice = 'af_heart', onProgress = () => {}) {
   const audio = await _kokoroTTS.generate(text, { voice });
   onProgress(1.0);
 
-  // audio is Float32Array PCM at 24 kHz
-  const audioCtx = new AudioContext();
-  const audioBuffer = audioCtx.createBuffer(1, audio.length, 24000);
-  audioBuffer.copyToChannel(audio, 0);
+  // kokoro-js v1 returns Audio { data: Float32Array, sampling_rate: number }
+  const pcm        = audio.data;
+  const sampleRate = audio.sampling_rate ?? 24000;
+  const audioCtx   = new AudioContext();
+  const audioBuffer = audioCtx.createBuffer(1, pcm.length, sampleRate);
+  audioBuffer.copyToChannel(pcm, 0);
   audioCtx.close();
 
-  return { audioBuffer, sampleRate: 24000 };
+  return { audioBuffer, sampleRate };
 }
