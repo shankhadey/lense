@@ -6,6 +6,17 @@
   <title id="page-title">Lense — Record. Zoom. Share.</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="stylesheet" href="style.css" />
+  <!--
+    Import map — resolves bare specifiers used by kokoro-js's internal ESM imports.
+    Must appear before any <script> tag that triggers dynamic import().
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "@huggingface/transformers": "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js"
+    }
+  }
+  </script>
 </head>
 <body>
 
@@ -203,11 +214,14 @@
           </div>
           <div class="rv-tl-legend">
             <span class="rv-legend-item"><span class="rv-legend-dot zoom"></span>Zoom in/out</span>
+            <span class="rv-legend-item"><span class="rv-legend-dot ai-zoom"></span>AI zoom</span>
+            <span class="rv-legend-item"><span class="rv-legend-dot ai-spotlight"></span>Spotlight</span>
+            <span class="rv-legend-item"><span class="rv-legend-dot ai-callout"></span>Callout</span>
           </div>
         </div>
       </div>
 
-      <!-- Right: stats + heatmap + zoom list -->
+      <!-- Right: stats + tabbed panel -->
       <div class="rv-right">
 
         <div class="rv-stats">
@@ -221,9 +235,104 @@
           </div>
         </div>
 
-        <div class="rv-section">
-          <div class="rv-section-label">Zoom Moments</div>
+        <!-- Tab bar -->
+        <div class="rv-tabs">
+          <button class="rv-tab active" data-tab="moments">Moments</button>
+          <button class="rv-tab" data-tab="transcript">Transcript</button>
+          <button class="rv-tab" data-tab="ai">
+            AI
+            <span class="rv-tab-badge hidden" id="ai-tab-badge">0</span>
+          </button>
+        </div>
+
+        <!-- Moments tab -->
+        <div class="rv-tab-panel active" id="tab-moments">
           <div id="rv-zoom-list" class="rv-zoom-list"></div>
+        </div>
+
+        <!-- Transcript tab -->
+        <div class="rv-tab-panel hidden" id="tab-transcript">
+          <!-- Status / progress -->
+          <div class="ai-status" id="transcript-status">
+            <div class="ai-status-idle" id="transcript-idle">
+              <p class="ai-status-msg">Transcription will run automatically after recording.</p>
+              <button class="ai-action-btn" id="btn-transcribe">Transcribe now</button>
+            </div>
+            <div class="ai-status-running hidden" id="transcript-running">
+              <div class="ai-progress-bar"><div class="ai-progress-fill" id="transcript-progress"></div></div>
+              <span class="ai-status-msg" id="transcript-progress-label">Analyzing audio…</span>
+            </div>
+          </div>
+
+          <!-- Transcript words (clickable, seek video) -->
+          <div class="transcript-words hidden" id="transcript-words"></div>
+
+          <!-- Script refinement -->
+          <div class="transcript-refine hidden" id="transcript-refine">
+            <div class="transcript-refine-header">
+              <span class="sp-section-title">Refined Script</span>
+              <div class="transcript-refine-actions">
+                <button class="ai-action-btn sm" id="btn-refine">Refine with AI</button>
+                <button class="ai-ghost-btn sm hidden" id="btn-refine-revert">Revert</button>
+              </div>
+            </div>
+            <textarea class="transcript-script" id="transcript-script" placeholder="Refined script will appear here…" readonly></textarea>
+            <button class="ai-action-btn" id="btn-refine-accept" style="display:none">Accept refined script</button>
+          </div>
+        </div>
+
+        <!-- AI suggestions tab -->
+        <div class="rv-tab-panel hidden" id="tab-ai">
+          <!-- AI running / idle state -->
+          <div class="ai-status" id="ai-analysis-status">
+            <div class="ai-status-idle" id="ai-analysis-idle">
+              <p class="ai-status-msg">AI suggestions will appear here after recording.</p>
+            </div>
+            <div class="ai-status-running hidden" id="ai-analysis-running">
+              <div class="ai-progress-bar"><div class="ai-progress-fill" id="ai-analysis-progress"></div></div>
+              <span class="ai-status-msg" id="ai-analysis-label">Finding moments…</span>
+            </div>
+          </div>
+
+          <!-- Suggestion list -->
+          <div class="ai-suggestion-list" id="ai-suggestion-list"></div>
+
+          <!-- Accept all + dismissed pile controls -->
+          <div class="ai-bulk-actions hidden" id="ai-bulk-actions">
+            <button class="ai-action-btn" id="btn-accept-all-ai">Accept all suggestions</button>
+            <button class="ai-ghost-btn" id="btn-show-dismissed">Show dismissed (0)</button>
+          </div>
+
+          <!-- TTS section -->
+          <div class="ai-tts-section hidden" id="ai-tts-section">
+            <div class="sp-section-title">AI Voiceover</div>
+            <div class="ai-tts-controls">
+              <select class="ai-voice-select" id="ai-voice-select">
+                <option value="af_heart">American Female (Heart)</option>
+                <option value="af_bella">American Female (Bella)</option>
+                <option value="am_adam">American Male (Adam)</option>
+                <option value="bf_emma">British Female (Emma)</option>
+                <option value="bm_george">British Male (George)</option>
+              </select>
+              <button class="ai-action-btn" id="btn-gen-tts">Generate voiceover</button>
+            </div>
+            <div class="ai-tts-preview hidden" id="ai-tts-preview">
+              <div class="ai-waveform" id="ai-waveform"></div>
+              <div class="ai-tts-btns">
+                <button class="ai-ghost-btn sm" id="btn-tts-play">▶ Preview</button>
+                <button class="ai-action-btn sm" id="btn-tts-use">Use this voice</button>
+                <button class="ai-ghost-btn sm" id="btn-tts-discard">Use original audio</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Export with AI -->
+          <div class="ai-export-section hidden" id="ai-export-section">
+            <button class="btn-primary full" id="btn-export-ai">Export with AI</button>
+            <div class="ai-progress-bar hidden" id="ai-export-progress-wrap">
+              <div class="ai-progress-fill" id="ai-export-progress"></div>
+            </div>
+          </div>
         </div>
 
       </div>
@@ -304,6 +413,100 @@
         </div>
       </div>
 
+      <!-- AI settings — collapsed by default -->
+      <div class="modal-settings">
+        <button class="modal-settings-toggle" id="btn-ai-settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          AI Settings
+          <span class="modal-settings-arrow" id="ai-settings-arrow">▸</span>
+        </button>
+        <div id="ai-settings-panel" class="settings-panel hidden">
+          <div class="sp-body sp-body-col">
+
+            <!-- Per-feature toggles -->
+            <div class="sp-section-title">AI Features</div>
+            <div class="ai-toggle-grid">
+              <label class="ai-toggle-row">
+                <span>Auto-transcription</span>
+                <label class="toggle"><input type="checkbox" id="ai-toggle-transcription" /><span class="toggle-slider"></span></label>
+              </label>
+              <label class="ai-toggle-row">
+                <span>Script refinement</span>
+                <label class="toggle"><input type="checkbox" id="ai-toggle-refinement" /><span class="toggle-slider"></span></label>
+              </label>
+              <label class="ai-toggle-row">
+                <span>AI voiceover (TTS)</span>
+                <label class="toggle"><input type="checkbox" id="ai-toggle-tts" /><span class="toggle-slider"></span></label>
+              </label>
+              <label class="ai-toggle-row">
+                <span>Auto-zoom suggestions</span>
+                <label class="toggle"><input type="checkbox" id="ai-toggle-zoom" /><span class="toggle-slider"></span></label>
+              </label>
+              <label class="ai-toggle-row">
+                <span>Spotlight suggestions</span>
+                <label class="toggle"><input type="checkbox" id="ai-toggle-spotlight" /><span class="toggle-slider"></span></label>
+              </label>
+              <label class="ai-toggle-row">
+                <span>Callout suggestions</span>
+                <label class="toggle"><input type="checkbox" id="ai-toggle-callout" /><span class="toggle-slider"></span></label>
+              </label>
+            </div>
+
+            <!-- Autonomy slider -->
+            <div class="sp-section-title" style="margin-top:14px">Autonomy</div>
+            <div class="ai-autonomy-wrap">
+              <div class="ai-autonomy-btns">
+                <button class="ai-auto-btn" data-level="1">
+                  <span class="ai-auto-icon">👁</span>
+                  <span class="ai-auto-label">Reviewed</span>
+                  <span class="ai-auto-desc">Approve everything</span>
+                </button>
+                <button class="ai-auto-btn" data-level="2">
+                  <span class="ai-auto-icon">⚡</span>
+                  <span class="ai-auto-label">Guided</span>
+                  <span class="ai-auto-desc">Review low-confidence</span>
+                </button>
+                <button class="ai-auto-btn" data-level="3">
+                  <span class="ai-auto-icon">🚀</span>
+                  <span class="ai-auto-label">Autopilot</span>
+                  <span class="ai-auto-desc">Just make it great</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Duration sliders -->
+            <div class="sp-section-title" style="margin-top:14px">Effect Durations</div>
+            <div class="sp-controls sp-controls-narrow">
+              <div class="sp-row">
+                <label class="sp-label">AI Zoom hold <span class="sp-value" id="ai-zoom-dur-val"></span></label>
+                <div class="sp-slider-wrap">
+                  <span class="sp-hint-l">1s</span>
+                  <input type="range" id="ai-zoom-dur" min="1000" max="10000" step="500" />
+                  <span class="sp-hint-r">10s</span>
+                </div>
+              </div>
+              <div class="sp-row">
+                <label class="sp-label">Spotlight hold <span class="sp-value" id="ai-spotlight-dur-val"></span></label>
+                <div class="sp-slider-wrap">
+                  <span class="sp-hint-l">0.5s</span>
+                  <input type="range" id="ai-spotlight-dur" min="500" max="10000" step="500" />
+                  <span class="sp-hint-r">10s</span>
+                </div>
+              </div>
+              <div class="sp-row">
+                <label class="sp-label">Callout hold <span class="sp-value" id="ai-callout-dur-val"></span></label>
+                <div class="sp-slider-wrap">
+                  <span class="sp-hint-l">0.5s</span>
+                  <input type="range" id="ai-callout-dur" min="500" max="8000" step="500" />
+                  <span class="sp-hint-r">8s</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
       <div id="modal-error" class="modal-error hidden"></div>
 
       <button class="btn-hero full" id="btn-go">
@@ -314,6 +517,8 @@
   </div>
 
   <script src="config.js"></script>
+  <script src="ai.js"></script>
+  <script src="elements.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
