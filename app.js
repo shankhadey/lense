@@ -48,7 +48,6 @@ const state = {
   chunks:         [],
   startTime:      null,
   timerInterval:  null,
-  rafId:          null,
   _screenVideo:   null,   // decodes screen stream
   _offscreen:     null,   // offscreen canvas — never in DOM
   _offCtx:        null,   // offscreen canvas 2d context
@@ -1252,7 +1251,8 @@ function buildZoomList(dur) {
     `;
     item.querySelector(".rv-zi-seek").addEventListener("click", e => {
       const rv = $("rv-video");
-      rv.currentTime = parseFloat(e.target.dataset.t);
+      const t = parseFloat(e.target.dataset.t);
+      if (!isNaN(t) && t >= 0) rv.currentTime = t;
       rv.play();
     });
     list.appendChild(item);
@@ -1269,10 +1269,16 @@ const SETTINGS_KEY = "lense_zoom_settings";
 (function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-    if (!saved) return;
-    if (saved.ZOOM_FACTOR    !== undefined) CONFIG.ZOOM_FACTOR    = saved.ZOOM_FACTOR;
-    if (saved.ZOOM_DURATION_MS !== undefined) CONFIG.ZOOM_DURATION_MS = saved.ZOOM_DURATION_MS;
-    if (saved.ZOOM_EASING    !== undefined) CONFIG.ZOOM_EASING    = saved.ZOOM_EASING;
+    if (!saved || typeof saved !== "object") return;
+    const EASING_VALUES = ["linear", "ease-in", "ease-out", "ease-in-out"];
+    if (typeof saved.ZOOM_FACTOR === "number" &&
+        saved.ZOOM_FACTOR >= 0.05 && saved.ZOOM_FACTOR <= 1.0)
+      CONFIG.ZOOM_FACTOR = saved.ZOOM_FACTOR;
+    if (typeof saved.ZOOM_DURATION_MS === "number" &&
+        saved.ZOOM_DURATION_MS >= 200 && saved.ZOOM_DURATION_MS <= 1000)
+      CONFIG.ZOOM_DURATION_MS = saved.ZOOM_DURATION_MS;
+    if (EASING_VALUES.includes(saved.ZOOM_EASING))
+      CONFIG.ZOOM_EASING = saved.ZOOM_EASING;
   } catch {}
 })();
 
