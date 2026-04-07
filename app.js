@@ -382,6 +382,15 @@ let _lastBlurTime = document.hasFocus() ? -Infinity : Date.now();
 let _prevHasFocus  = document.hasFocus();
 window.addEventListener("blur", () => { _lastBlurTime = Date.now(); });
 
+// Event-cached focus flag — backup for document.hasFocus() which may be unreliable
+// on some systems (DevTools focused, file:// protocol quirks, accessibility tools, etc.).
+// window.focus fires AFTER hasFocus() IPC so _windowHasFocus is never true before
+// hasFocus() is true. The OR adds zero lag frames in the normal case; it only rescues
+// the case where hasFocus() stays false after the user returns to Lense.
+let _windowHasFocus = document.hasFocus();
+window.addEventListener("focus", () => { _windowHasFocus = true; });
+window.addEventListener("blur",  () => { _windowHasFocus = false; });
+
 // One-frame-ago backup of _workingCanvas — used by the window.focus handler to
 // undo contamination from the Branch B lag frame that runs when sv has already
 // updated to show Lense UI but hasFocus() IPC hasn't arrived yet.
@@ -568,7 +577,7 @@ function renderFrame() {
   // Grace period: if hasFocus() just became false (<200ms ago), treat the tab
   // as still visible. Handles address-bar clicks where hasFocus() dips but sv
   // still captures the Lense tab.
-  const hasFocus = document.hasFocus();
+  const hasFocus = document.hasFocus() || _windowHasFocus;
   // Eagerly detect focus loss before the async blur event fires.
   // When clicking a native app, hasFocus() drops immediately (OS state) while
   // window.blur fires later via IPC. The renderFrame between them would otherwise
@@ -593,8 +602,9 @@ function renderFrame() {
       // _workingCanvasReady stays true — restored content is valid native-app frame
     } else {
       // No clean backup yet (recording just started or very fast switch).
-      // Show blank rather than risk showing Lense UI.
+      // Clear thumbnail to blank so a stale Lense UI frame can't persist.
       state._workingCanvasReady = false;
+      thumbCtx.clearRect(0, 0, thumbCanvas.width, thumbCanvas.height);
     }
   }
   _wasLenseTabVisible = lenseTabVisible;
@@ -674,9 +684,14 @@ function renderFrame() {
     state._workingCanvasReady = true;
   }
 
-  // Thumbnail
+  // Thumbnail — prefer _prevWorkingCanvas (throttled backup, always pre-lag-frame native-app
+  // content) over _workingCanvas, which may temporarily contain Lense UI during a lag frame.
   if (state.isFullScreen && state._workingCanvas && state._workingCanvasReady) {
-    thumbCtx.drawImage(state._workingCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+    if (_prevWorkingCanvasReady && _prevWorkingCtx) {
+      thumbCtx.drawImage(_prevWorkingCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+    } else {
+      thumbCtx.drawImage(state._workingCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+    }
   } else {
     thumbCtx.drawImage(sv, 0, 0, thumbCanvas.width, thumbCanvas.height);
   }
