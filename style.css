@@ -231,6 +231,11 @@ button { cursor: pointer; border: none; background: none; font-family: inherit; 
   border-left: 2px solid rgba(249,115,22,0.6);
   border-right: 2px solid rgba(249,115,22,0.6);
 }
+.rv-zoom-band-ai {
+  background: rgba(99,102,241,0.18);
+  border-left-color: rgba(99,102,241,0.7);
+  border-right-color: rgba(99,102,241,0.7);
+}
 .rv-tl-marker { position: absolute; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
 .rv-marker-in  { background: var(--accent); }
 .rv-marker-out { background: rgba(249,115,22,0.35); }
