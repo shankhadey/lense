@@ -251,7 +251,7 @@ const TRIGGERS = {
     multiplier: 2.0,
   },
   callout: {
-    phrases: /\b(notice|notice\s+this|draw\s+attention|pay\s+attention|look\s+at|look\s+here|see\s+this|see\s+how|see\s+that|watch\s+this|watch\s+how|focus\s+on|important|note\s+that|highlight|this\s+is\s+key|key\s+thing|worth\s+noting|make\s+sure\s+you|don.t\s+miss|heads\s+up)\b/i,
+    phrases: /\b(notice|notice\s+this|draw\s+attention|pay\s+attention|look\s+at|look\s+here|look\s+right\s+here|see\s+this|see\s+here|see\s+how|see\s+that|watch\s+this|watch\s+how|focus\s+on|focus\s+here|focus\s+right\s+here|focus\s+on\s+this|important|note\s+that|highlight|this\s+is\s+key|key\s+thing|worth\s+noting|make\s+sure\s+you|don.t\s+miss|heads\s+up)\b/i,
     multiplier: 2.5,
   },
   spotlight: {
@@ -358,28 +358,37 @@ async function extractFrames(videoBlob, onProgress = () => {}) {
  * Compute pixel diff between two raw RGBA pixel buffers (Uint8ClampedArray).
  */
 function pixelDiff(da, db, W, H) {
-  let sumX = 0, sumY = 0, sumW = 0, totalDiff = 0;
+  // Divide into 8×8 grid; find the cell with the most concentrated change.
+  // This is more accurate than a global centroid, which gets dragged off-target
+  // when multiple independent regions change simultaneously (e.g. cursor in area A
+  // + background animation in area B → centroid falls between them).
+  const GRID = 8;
+  const cells = new Float32Array(GRID * GRID);
+  let totalDiff = 0;
 
   for (let i = 0; i < da.length; i += 4) {
-    const dr = Math.abs(da[i]   - db[i]);
-    const dg = Math.abs(da[i+1] - db[i+1]);
-    const db2 = Math.abs(da[i+2] - db[i+2]);
-    const diff = (dr + dg + db2) / (3 * 255);
-    if (diff > 0.05) {  // ignore tiny noise
-      const px = ((i / 4) % W) / W;
-      const py = Math.floor((i / 4) / W) / H;
-      sumX += px * diff;
-      sumY += py * diff;
-      sumW += diff;
+    const diff = (Math.abs(da[i] - db[i]) + Math.abs(da[i+1] - db[i+1]) + Math.abs(da[i+2] - db[i+2])) / (3 * 255);
+    if (diff > 0.05) {
+      const idx  = i >> 2;                                 // pixel index
+      const gx   = Math.min(GRID - 1, ((idx % W) * GRID / W) | 0);
+      const gy   = Math.min(GRID - 1, (Math.floor(idx / W) * GRID / H) | 0);
+      cells[gy * GRID + gx] += diff;
     }
     totalDiff += diff;
   }
 
-  const pixelCount = da.length / 4;
+  // Find the highest-scoring cell
+  let maxVal = 0, maxIdx = 0;
+  for (let c = 0; c < cells.length; c++) {
+    if (cells[c] > maxVal) { maxVal = cells[c]; maxIdx = c; }
+  }
+  const maxGx = maxIdx % GRID;
+  const maxGy = (maxIdx / GRID) | 0;
+
   return {
-    cx: sumW > 0 ? sumX / sumW : 0.5,
-    cy: sumW > 0 ? sumY / sumW : 0.5,
-    intensity: Math.min(1, totalDiff / pixelCount * 8),  // scale up; raw values are small
+    cx: (maxGx + 0.5) / GRID,
+    cy: (maxGy + 0.5) / GRID,
+    intensity: Math.min(1, totalDiff / (da.length / 4) * 8),
   };
 }
 
@@ -453,7 +462,7 @@ async function suggestElements(videoBlob, transcript, onProgress = () => {}) {
 
   moments.forEach(group => {
     const best = group.slice().sort((a, b) => b.score - a.score)[0];
-    if (best.t - lastT < 3) return;
+    if (best.t - lastT < 2) return;
 
     // Determine which types this moment qualifies for (respect feature toggles).
     // Callout/spotlight: combined score OR explicit phrase + any perceptible activity

@@ -2057,7 +2057,11 @@ function updateDismissedBtn() {
 function renderSuggestions() {
   renderSuggestionCards($('ai-suggestion-list'), state.aiSuggestions, {
     onAccept:    (s, applyAll) => { applySuggestion(s, applyAll); renderSuggestions(); refreshAITimeline(); },
-    onDismiss:   (s) => { s.dismissed = true; renderSuggestions(); refreshAITimeline(); updateDismissedBtn(); },
+    onDismiss:   (s) => {
+      if (s.accepted) { unapplySuggestion(s); s.accepted = false; }
+      s.dismissed = true;
+      renderSuggestions(); refreshAITimeline(); updateDismissedBtn();
+    },
     onRestore:   (s) => { s.dismissed = false; renderSuggestions(); refreshAITimeline(); updateDismissedBtn(); },
     onRemove:    (s) => {
       if (s.accepted) unapplySuggestion(s);
