@@ -261,7 +261,9 @@ const TRIGGERS = {
 };
 
 // Base score thresholds (raw intensity × phrase multiplier must exceed these)
-const ZOOM_THRESHOLD      = 0.12;
+const ZOOM_THRESHOLD        = 0.12;  // phrase-boosted score (raw intensity ≥ 0.06 with 2× multiplier)
+const ZOOM_SILENT_THRESHOLD = 0.35;  // no phrase match — require very large visual change (tab switch,
+                                     // full-screen update) to avoid triggering on setup/navigation
 const CALLOUT_THRESHOLD   = 0.18;
 const SPOTLIGHT_THRESHOLD = 0.20;
 
@@ -451,6 +453,14 @@ async function suggestElements(videoBlob, transcript, onProgress = () => {}) {
     a.multiplier    = bestMultiplier;
     a.suggestedType = bestType;
     a.score         = a.intensity * bestMultiplier;
+
+    // Earliest phrase-word timestamp in the window.
+    // Used at suggestion creation to re-anchor the zoom start when the user
+    // spoke *after* the activity peak (e.g. narrates "notice this" 1-2s after
+    // the cursor/click activity that generated the high pixel diff).
+    a.phraseT = bestType !== null && windowChunks.length
+      ? windowChunks.reduce((min, w) => Math.min(min, w.timestamp[0]), Infinity)
+      : null;
   });
 
   onProgress(0.80);
@@ -469,7 +479,10 @@ async function suggestElements(videoBlob, transcript, onProgress = () => {}) {
     // (cursor movement on a full-screen recording has very low intensity, but the
     // user explicitly called it out verbally — honour the phrase over the score).
     const qualified = [];
-    if (zoomOn && best.score >= ZOOM_THRESHOLD)
+    // No-phrase zoom needs a much higher threshold to avoid triggering on
+    // setup activity (opening an app, navigating to a page, scrolling to position).
+    const zoomThresh = best.suggestedType !== null ? ZOOM_THRESHOLD : ZOOM_SILENT_THRESHOLD;
+    if (zoomOn && best.score >= zoomThresh)
       qualified.push({ type: 'zoom', score: best.score });
     if (calloutOn && best.suggestedType === 'callout' &&
         (best.score >= CALLOUT_THRESHOLD || best.intensity >= PHRASE_TRIGGER_FLOOR))
@@ -496,8 +509,16 @@ async function suggestElements(videoBlob, transcript, onProgress = () => {}) {
 
     const recommended = qualified[qualified.length - 1].type; // highest-intent type
 
+    // If the triggering phrase starts >0.5s AFTER the activity peak, anchor the
+    // suggestion to the phrase rather than the frame. This prevents a common
+    // pattern where setup/navigation (large pixel diff) fires a zoom and it
+    // finishes right as the user begins their narration and cursor movement.
+    const anchorT = (best.phraseT !== null && best.phraseT > best.t + 0.5)
+      ? best.phraseT - 0.3   // start just before the user speaks
+      : best.t - 0.3;         // phrase concurrent or before activity — keep current behaviour
+
     suggestions.push({
-      t:           Math.max(0, (best.t - 0.3) * 1000),  // ms
+      t:           Math.max(0, anchorT * 1000),  // ms
       qualified,
       recommended,
       active:      null,       // set when user/autopilot picks a type
