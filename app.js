@@ -18,7 +18,7 @@
   document.getElementById("page-title").textContent =
     `${CONFIG.APP_NAME} — ${CONFIG.TAGLINE}`;
   document.querySelectorAll("#nav-github, #footer-github").forEach(el => {
-    el.href = CONFIG.GITHUB_URL;
+    el.href = CONFIG.FEEDBACK_URL;
   });
 })();
 
