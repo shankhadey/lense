@@ -557,8 +557,7 @@ async function generateTTS(text, voice = 'af_heart', onProgress = () => {}) {
 
   if (!_kokoroTTS) {
     const { KokoroTTS } = await import(
-      //'https://cdn.jsdelivr.net/npm/kokoro-js@1/dist/kokoro.min.js'
-      'kokoro-js": "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm'
+      'https://cdn.jsdelivr.net/npm/kokoro-js@1/dist/kokoro.min.js'
     );
     _kokoroTTS = await KokoroTTS.from_pretrained(
       'onnx-community/Kokoro-82M-v1.0',
