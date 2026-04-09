@@ -564,6 +564,7 @@ async function generateTTS(text, voice = 'af_heart', onProgress = () => {}) {
       {
         dtype:   'q8',
         device:  'wasm',   // fallback; kokoro-js uses webgpu automatically if available
+        fetch_options: { credentials: 'omit' }, //401 fix
         progress_callback: p => onProgress(0.05 + p.progress * 0.70),
       }
     );
