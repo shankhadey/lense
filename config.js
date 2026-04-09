@@ -10,6 +10,7 @@ const CONFIG = {
   APP_NAME:   "Lense",
   TAGLINE:    "Record. Zoom. Share.",
   GITHUB_URL: "https://github.com/shankhadey/lense",
+  FEEDBACK_URL: "https://forms.gle/CfocqhcjXGgorxGL6",
   MAX_REC_MS: 30 * 60 * 1000,  // 30 min max recording
 
   /**
