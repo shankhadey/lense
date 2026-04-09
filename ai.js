@@ -575,12 +575,17 @@ async function generateTTS(text, voice = 'af_heart', onProgress = () => {}) {
   onProgress(1.0);
 
   // kokoro-js v1 returns Audio { data: Float32Array, sampling_rate: number }
-  const pcm        = audio.data;
+  const pcm        = audio.data || audio.data;
+  if (!pcm) {
+    console.error('TTS Result structure:', audio);
+    throw new Error('TTS failed: Audio data is undefined');
+  }
+  
   const sampleRate = audio.sampling_rate ?? 24000;
   const audioCtx   = new AudioContext();
   const audioBuffer = audioCtx.createBuffer(1, pcm.length, sampleRate);
   audioBuffer.copyToChannel(pcm, 0);
-  audioCtx.close();
+  //audioCtx.close();
 
   return { audioBuffer, sampleRate };
 }
