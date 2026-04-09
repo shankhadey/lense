@@ -14,11 +14,11 @@
   {
     "imports": {
       "path": "https://cdn.jsdelivr.net/npm/path-browserify@1.0.1/+esm",
-      "fs": "data:text/javascript,export default { promises: {} }; export const promises = {};",
-      "fs/promises": "data:text/javascript,export default {};",
+      "fs": "data:text/javascript,export default { promises: {}, readFileSync: () => {}, writeFile: () => {} }; export const promises = {};",
+      "fs/promises": "data:text/javascript,export default {}; export const readFile = () => {};",
       "url": "https://cdn.jsdelivr.net/npm/url@0.11.4/+esm",
       "module": "data:text/javascript,export default {}",
-      "process": "data:text/javascript,export default { env: { NODE_ENV: 'production' }, nextTick: (cb) => setTimeout(cb, 0) };",
+      "process": "data:text/javascript,export default { env: { NODE_ENV: 'production' }, nextTick: (cb) => setTimeout(cb, 0), cwd: () => '/' };",
       "@huggingface/transformers": "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js",
       "phonemizer": "https://cdn.jsdelivr.net/npm/phonemizer/+esm"
     }
