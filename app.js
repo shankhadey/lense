@@ -340,7 +340,7 @@ let _snapCtx    = null;
 function startThumbSnapshots() {
   if (!_snapCanvas) {
     _snapCanvas = document.createElement("canvas");
-    _snapCtx    = _snapCanvas.getContext("2d");
+    _snapCtx    = _snapCanvas.getContext("2d", { willReadFrequently: true });//Shankha added
   }
   // Capture every 500ms while recording — only when tab is hidden
   state._snapInterval = setInterval(() => {
